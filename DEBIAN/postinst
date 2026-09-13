@@ -1,8 +1,8 @@
 #!/bin/sh
 # postinst — CPUWatcher 安装后处理
 #
-# 硬性约束：这里绝不 respring、绝不 killall SpringBoard。
-# 用户自己决定什么时候重启，避免安装脚本替用户做危险动作。
+# 硬性约束：本脚本绝不自动重启桌面、绝不杀系统界面进程。
+# 由用户自己决定什么时候重启，不让安装脚本替用户做危险动作。
 
 set -u
 
@@ -16,7 +16,7 @@ mkdir -p "$DATA" 2>/dev/null || true
 chown mobile:mobile "$DATA" 2>/dev/null || true
 chmod 0755 "$DATA" 2>/dev/null || true
 
-# 2) 特权助手：setuid root 是它能跨进程采样的唯一来源。
+# 2) 特权助手：setuid root 是它能跨进程采样的唯一权限来源。
 #    这里再兜一次（打包时已设过），确保某些解包工具丢掉权限位时也能恢复。
 if [ -f "$HELPER" ]; then
     chown root:wheel "$HELPER" 2>/dev/null || true
@@ -30,5 +30,5 @@ else
     echo "CPUWatcher: 警告 —— 未找到 $HELPER，插件将退化为受限模式"
 fi
 
-echo "CPUWatcher: 安装完成。请自行重启桌面（Respring）使插件生效。"
+echo "CPUWatcher: 安装完成。请自行重启桌面使插件生效。"
 exit 0

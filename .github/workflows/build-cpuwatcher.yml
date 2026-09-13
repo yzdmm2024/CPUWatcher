@@ -103,14 +103,15 @@ jobs:
           fi
           echo "OK: 无任何开机自启项"
 
-      - name: "Guard 2/5: postinst 不许自动 respring / killall SpringBoard"
+      - name: "Guard 2/5: postinst 不许自动重启桌面"
         run: |
-          if grep -Eq "killall|respring|sbreload" stage/DEBIAN/postinst; then
+          # 只看真实命令，忽略注释行，避免把说明文字误判成动作。
+          if grep -vE '^[[:space:]]*#' stage/DEBIAN/postinst | grep -qiE 'killall|sbreload|respring'; then
             echo "FATAL: postinst 里有自动重启桌面的动作"
-            grep -En "killall|respring|sbreload" stage/DEBIAN/postinst
+            grep -vE '^[[:space:]]*#' stage/DEBIAN/postinst | grep -inE 'killall|sbreload|respring'
             exit 1
           fi
-          echo "OK: postinst 不含自动 respring"
+          echo "OK: postinst 不含自动重启桌面"
 
       - name: "Guard 3/5: cpuwatchctl 必须是 setuid root(4755)"
         run: |

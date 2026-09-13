@@ -340,10 +340,10 @@ static NSString *CWFormatTierShort(CWTier t) {
     [specs addObject:g2];
 
     [specs addObject:[self buttonWithName:@"实时监控（打开后开始采集）"
-                                   action:@selector(openMonitor)]];
+                                   action:@selector(openMonitor:)]];
 
     [specs addObject:[self buttonWithName:@"采集权限自检"
-                                   action:@selector(runSelfCheck)]];
+                                   action:@selector(runSelfCheck:)]];
 
     PSSpecifier *g3 = [PSSpecifier groupSpecifierWithName:@"悬浮窗"];
     [g3 setProperty:@"开启后，只有在「实时监控」页处于前台时才显示悬浮窗；返回上级页立即消失并停止刷新。"
@@ -391,6 +391,9 @@ static NSString *CWFormatTierShort(CWTier t) {
     return CWTierName(CWDetectTier());
 }
 
+// PSButtonCell 的坑（SuperScreenshot v6.02 踩过）：
+// 选择器必须带冒号、方法必须吃一个参数，否则 PSButtonCell 找不到实现，按钮点了完全没反应。
+// setAction: 在 SDK 头文件里不存在，只能用 setButtonAction:。
 - (PSSpecifier *)buttonWithName:(NSString *)name action:(SEL)action {
     PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:name
                                                     target:self
@@ -399,13 +402,23 @@ static NSString *CWFormatTierShort(CWTier t) {
                                                     detail:nil
                                                       cell:PSButtonCell
                                                       edit:nil];
-    s.buttonAction = action;
+    [s setButtonAction:action];
     return s;
+}
+
+/// 点击回调的 sender 在不同 iOS 版本上可能是 PSSpecifier，也可能是承载它的 cell，统一兼容。
+static PSSpecifier *CWSenderSpecifier(id sender) {
+    if ([sender isKindOfClass:[PSSpecifier class]]) return sender;
+    if ([sender respondsToSelector:@selector(specifier)]) {
+        id s = [sender specifier];
+        if ([s isKindOfClass:[PSSpecifier class]]) return s;
+    }
+    return nil;
 }
 
 #pragma mark 动作
 
-- (void)openMonitor {
+- (void)openMonitor:(id)sender {
     CWMonitorViewController *vc = [CWMonitorViewController new];
     [self.navigationController pushViewController:vc animated:YES];
 }
@@ -418,7 +431,7 @@ static NSString *CWFormatTierShort(CWTier t) {
     CWPrefSet(kPrefHUDWithPage, @([value boolValue]));
 }
 
-- (void)runSelfCheck {
+- (void)runSelfCheck:(id)sender {
     CWEnsureDataDir();
 
     NSMutableString *msg = [NSMutableString string];
