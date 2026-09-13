@@ -85,6 +85,14 @@
 			<key>action</key>
 			<string>listInjectedPlugins:</string>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>插件冲突扫描（IMP 归属）</string>
+			<key>action</key>
+			<string>runConflictScan:</string>
+		</dict>
 
 		<!-- ============ 悬浮窗 ============ -->
 		<dict>

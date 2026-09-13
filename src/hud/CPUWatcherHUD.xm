@@ -357,6 +357,12 @@ static void CWHUDNotifyCallback(CFNotificationCenterRef center,
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             CWDumpInjectedImages();
         });
+    } else if (CFStringCompare(name, CW_NOTIFY_SCAN_CONFLICTS, 0) == kCFCompareEqualTo) {
+        // P4 冲突扫描：必须在后台线程跑，否则遍历上万类会卡死 SpringBoard 主线程
+        //（看门狗风险 / 白苹果）。扫描完自行广播 SCAN_DONE。
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            CWRunConflictScan();
+        });
     }
 }
 
@@ -380,6 +386,12 @@ static void CWHUDNotifyCallback(CFNotificationCenterRef center,
                                     NULL,
                                     CWHUDNotifyCallback,
                                     CW_NOTIFY_DUMP_INJECTED,
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    CWHUDNotifyCallback,
+                                    CW_NOTIFY_SCAN_CONFLICTS,
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 }

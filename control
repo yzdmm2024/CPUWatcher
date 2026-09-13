@@ -1,6 +1,6 @@
 Package: com.axs.cpuwatcher
 Name: CPU 监视器
-Version: 0.1.3
+Version: 0.1.4
 Architecture: iphoneos-arm64
 Description: 本项目仅限个人学习使用，仅针对 Relaxin 越狱环境、iOS 16.6.1 进行适配，其他越狱 / 系统版本均未测试。使用产生的各类报错、异常问题，请使用者自行排查解决。功能说明：按需 CPU 与性能诊断工具（默认静默，零后台采样，打开监控页才启动采集，返回上级页立即停止）。① 全局 CPU 占用与内存占用；② 实时进程列表（按 CPU 占用排序，含进程名 / PID / CPU% / 内存 / 线程数。实测非 root 即可读取，不需要特权助手）；③ 能耗与唤醒排行（按进程统计耗电纳焦与中断唤醒次数，用于定位「CPU 不高但待机耗电」的插件。同样非 root 可读）；④ 一键列出 SpringBoard 实际加载的插件 dylib 清单（在 SpringBoard 内部直接问 dyld，不是解析 Filter plist 猜的，含每个 dylib 的 UUID，可与崩溃日志 usedImages 对齐）；⑤ 悬浮窗（默认关闭，开启时在「实时监控」页显示实时 CPU 与内存，返回后彻底停止刷新）。安全设计：不注册任何 LaunchDaemon、开机零执行、不改动系统关键进程、不写越狱目录（数据只落在 /var/mobile/Media/CPUWatcher）、采集进程有 60 秒硬性存活上限与孤儿看门狗。
 Depends: mobilesubstrate, firmware(>=14.0), preferenceloader

@@ -74,6 +74,7 @@ NSString *CWDataDirPath(void);
 NSString *CWSnapshotPath(void);
 NSString *CWStatePath(void);
 NSString *CWInjectedListPath(void);
+NSString *CWConflictPath(void);
 NSString *CWHUDStatusPath(void);
 NSString *CWHelperLaunchPath(void);
 BOOL      CWEnsureDataDir(void);

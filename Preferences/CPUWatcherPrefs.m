@@ -25,6 +25,33 @@ extern char **environ;
 
 static NSString *CWFormatTierShort(CWTier t);
 
+// ---- P4 冲突扫描：面板 <-> HUD 通信 ----
+@class CPUWatcherPrefsController;
+@class CWConflictViewController;
+@class CWConflictDetailViewController;
+static __weak CPUWatcherPrefsController *gVisiblePrefs = nil;
+
+@interface CPUWatcherPrefsController ()
+@property (nonatomic, strong) UIAlertController *scanAlert;
+@end
+
+// HUD 扫描完成后广播 SCAN_DONE，回调里把结果页推出来。
+static void CWScanDoneCallback(CFNotificationCenterRef center, void *observer,
+                               CFNotificationName name, const void *object, CFDictionaryRef userInfo) {
+    if (!name) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gVisiblePrefs) [gVisiblePrefs cwScanDidFinish];
+    });
+}
+static void cwRegisterScanDoneOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                        CWScanDoneCallback, CW_NOTIFY_SCAN_DONE, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+    });
+}
+
 static NSString * const kPrefsSuite      = @"com.axs.cpuwatcher";
 static NSString * const kPrefHUDWithPage = @"hudWithMonitorPage";
 static NSString * const kPrefSortMode    = @"lastSortMode";
@@ -501,6 +528,7 @@ static NSString *CWFormatTierShort(CWTier t) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    gVisiblePrefs = self;
     // 推到下一 runloop 再刷，避开 PSListController 在同一帧改表被刷空的时序问题。
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
@@ -668,4 +696,184 @@ static NSString *CWFormatTierShort(CWTier t) {
     });
 }
 
+@end
+
+#pragma mark - 冲突扫描结果页
+
+@interface CWConflictViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSDictionary *result;
+@property (nonatomic, strong) NSArray *tweaks;
+@property (nonatomic, strong) NSArray *conflicts;
+@property (nonatomic, strong) UITableView *table;
+- (instancetype)initWithResult:(NSDictionary *)r;
+@end
+
+@implementation CWConflictViewController
+- (instancetype)initWithResult:(NSDictionary *)r {
+    if ((self = [super init])) {
+        _result = r;
+        _tweaks = [r[@"tweaks"] isKindOfClass:[NSArray class]] ? r[@"tweaks"] : @[];
+        _conflicts = [r[@"conflicts"] isKindOfClass:[NSArray class]] ? r[@"conflicts"] : @[];
+    }
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"插件冲突扫描";
+    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    _table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    _table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _table.dataSource = self;
+    _table.delegate = self;
+    [self.view addSubview:_table];
+
+    UIBarButtonItem *export = [[UIBarButtonItem alloc] initWithTitle:@"导出"
+                                                              style:UIBarButtonItemStylePlain
+                                                             target:self
+                                                             action:@selector(onExport:)];
+    self.navigationItem.rightBarButtonItem = export;
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
+    if (s == 0) {
+        return [NSString stringWithFormat:@"概览：扫描 %.1fs / 类 %@ / 插件 %@ / 冲突 %@",
+                [self.result[@"scanSeconds"] doubleValue],
+                self.result[@"totalClasses"] ?: @0,
+                self.result[@"tweakCount"] ?: @0,
+                self.result[@"conflictCount"] ?: @0];
+    }
+    if (s == 1) return @"冲突项（同一方法被多个插件替换）";
+    return @"各插件替换的方法数（点击查看明细）";
+}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    if (s == 0) return 1;
+    if (s == 1) return self.conflicts.count ?: 1;
+    return self.tweaks.count ?: 1;
+}
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *cid = @"cwconf";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cid];
+        cell.textLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+        cell.detailTextLabel.numberOfLines = 0;
+    }
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (ip.section == 0) {
+        cell.textLabel.text = @"说明";
+        cell.detailTextLabel.text = @"冲突项（红字）才是真正「打架」的插件。点下方各插件可看它替换了哪些方法。";
+        return cell;
+    }
+    if (ip.section == 1) {
+        if (self.conflicts.count == 0) {
+            cell.textLabel.text = @"未发现明显冲突";
+            cell.textLabel.textColor = [UIColor labelColor];
+            cell.detailTextLabel.text = @"";
+            return cell;
+        }
+        NSDictionary *c = self.conflicts[ip.row];
+        cell.textLabel.text = [NSString stringWithFormat:@"%@ %@", c[@"class"] ?: @"?", c[@"sel"] ?: @"?"];
+        cell.detailTextLabel.text = [(NSArray *)c[@"tweaks"] componentsJoinedByString:@"  ×  "];
+        cell.textLabel.textColor = [UIColor systemRedColor];
+        return cell;
+    }
+    if (self.tweaks.count == 0) {
+        cell.textLabel.text = @"（未检测到插件替换方法）";
+        cell.detailTextLabel.text = @"";
+        return cell;
+    }
+    NSDictionary *t = self.tweaks[ip.row];
+    cell.textLabel.text = [NSString stringWithFormat:@"%@  替换 %@ 方法 / 冲突 %@",
+                           t[@"name"] ?: @"?", t[@"hookCount"] ?: @0, t[@"conflictCount"] ?: @0];
+    cell.detailTextLabel.text = @"";
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    return cell;
+}
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == 2 && self.tweaks.count > 0) {
+        NSDictionary *t = self.tweaks[ip.row];
+        CWConflictDetailViewController *d = [[CWConflictDetailViewController alloc] initWithTweak:t];
+        [self.navigationController pushViewController:d animated:YES];
+    }
+}
+- (void)onExport:(id)sender {
+    NSMutableString *txt = [NSMutableString string];
+    [txt appendFormat:@"CPUWatcher 冲突扫描导出\n扫描耗时 %.1fs，类 %@，插件 %@，冲突 %@\n\n",
+            [self.result[@"scanSeconds"] doubleValue],
+            self.result[@"totalClasses"] ?: @0,
+            self.result[@"tweakCount"] ?: @0,
+            self.result[@"conflictCount"] ?: @0];
+    [txt appendString:@"【冲突项】\n"];
+    if (self.conflicts.count == 0) [txt appendString:@"（无）\n"];
+    for (NSDictionary *c in self.conflicts) {
+        [txt appendFormat:@"%@ %@  <=  %@\n", c[@"class"] ?: @"?", c[@"sel"] ?: @"?",
+                          [(NSArray *)c[@"tweaks"] componentsJoinedByString:@" , "]];
+    }
+    [txt appendString:@"\n【各插件替换的方法】\n"];
+    for (NSDictionary *t in self.tweaks) {
+        [txt appendFormat:@"\n● %@ （替换 %@ 方法，冲突 %@）\n", t[@"name"] ?: @"?",
+                          t[@"hookCount"] ?: @0, t[@"conflictCount"] ?: @0];
+        for (NSDictionary *h in (NSArray *)t[@"hooks"]) {
+            [txt appendFormat:@"    %@%@ %@\n", h[@"kind"] ?: @"", h[@"class"] ?: @"?", h[@"sel"] ?: @""];
+        }
+    }
+    NSString *path = @"/var/mobile/Media/CPUWatcher/conflicts_export.txt";
+    [txt writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    NSURL *url = [NSURL fileURLWithPath:path];
+    UIActivityViewController *av = [[UIActivityViewController alloc] initWithActivityItems:@[ txt, url ]
+                                                                     applicationActivities:nil];
+    [self presentViewController:av animated:YES completion:nil];
+}
+@end
+
+@interface CWConflictDetailViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSDictionary *tweak;
+@property (nonatomic, strong) NSArray *hooks;
+@property (nonatomic, strong) UITableView *table;
+- (instancetype)initWithTweak:(NSDictionary *)t;
+@end
+
+@implementation CWConflictDetailViewController
+- (instancetype)initWithTweak:(NSDictionary *)t {
+    if ((self = [super init])) {
+        _tweak = t;
+        _hooks = [t[@"hooks"] isKindOfClass:[NSArray class]] ? t[@"hooks"] : @[];
+    }
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = self.tweak[@"name"] ?: @"插件";
+    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    _table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
+    _table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _table.dataSource = self;
+    _table.delegate = self;
+    [self.view addSubview:_table];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    return self.hooks.count ?: 1;
+}
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *cid = @"cwhk";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cid];
+        cell.textLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+    if (self.hooks.count == 0) { cell.textLabel.text = @"（无）"; cell.detailTextLabel.text = @""; return cell; }
+    NSDictionary *h = self.hooks[ip.row];
+    cell.textLabel.text = [NSString stringWithFormat:@"%@%@", h[@"kind"] ?: @"", h[@"sel"] ?: @""];
+    cell.detailTextLabel.text = h[@"class"] ?: @"";
+    return cell;
+}
 @end
