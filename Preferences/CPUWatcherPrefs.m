@@ -26,41 +26,37 @@ extern char **environ;
 static NSString *CWFormatTierShort(CWTier t);
 
 // ---- P4 冲突扫描：面板 <-> HUD 通信 ----
-@class CPUWatcherPrefsController;
-@class CWConflictViewController;
-@class CWConflictDetailViewController;
-static __weak CPUWatcherPrefsController *gVisiblePrefs = nil;
-
-// 用 category 声明方法（不要求主类完整可见，且不与末尾主 @interface 冲突）；
-// scanAlert 属性放到主 @interface 里（extension 不能放在主类声明之前）。
-@interface CPUWatcherPrefsController (ScanPrivate)
+// 主 @interface 与结果页控制器 @interface 前置，使下方 C 回调和引用都能看到完整类型
+//（category/extension 不允许在类完整定义之前声明）。
+@interface CPUWatcherPrefsController : PSListController
+@property (nonatomic, strong) UIAlertController *scanAlert;
 - (void)runConflictScan:(id)sender;
 - (void)cwScanDidFinish;
 - (void)cwPresentConflictResult;
 @end
-@interface CWConflictViewController (Init)
+
+@interface CWConflictViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSDictionary *result;
+@property (nonatomic, strong) NSArray *tweaks;
+@property (nonatomic, strong) NSArray *conflicts;
+@property (nonatomic, strong) UITableView *table;
 - (instancetype)initWithResult:(NSDictionary *)r;
 @end
-@interface CWConflictDetailViewController (Init)
+
+@interface CWConflictDetailViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSDictionary *tweak;
+@property (nonatomic, strong) NSArray *hooks;
+@property (nonatomic, strong) UITableView *table;
 - (instancetype)initWithTweak:(NSDictionary *)t;
 @end
 
-// HUD 扫描完成后广播 SCAN_DONE，回调里把结果页推出来。
+@class CPUWatcherPrefsController;
+static __weak CPUWatcherPrefsController *gVisiblePrefs = nil;
+
+// HUD 扫描完成后广播 SCAN_DONE，回调里把结果页推出来（实现见文件末尾）。
 static void CWScanDoneCallback(CFNotificationCenterRef center, void *observer,
-                               CFNotificationName name, const void *object, CFDictionaryRef userInfo) {
-    if (!name) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (gVisiblePrefs) [gVisiblePrefs cwScanDidFinish];
-    });
-}
-static void cwRegisterScanDoneOnce(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-                                        CWScanDoneCallback, CW_NOTIFY_SCAN_DONE, NULL,
-                                        CFNotificationSuspensionBehaviorDeliverImmediately);
-    });
-}
+                               CFNotificationName name, const void *object, CFDictionaryRef userInfo);
+static void cwRegisterScanDoneOnce(void);
 
 static NSString * const kPrefsSuite      = @"com.axs.cpuwatcher";
 static NSString * const kPrefHUDWithPage = @"hudWithMonitorPage";
@@ -519,10 +515,6 @@ static NSString *CWFormatTierShort(CWTier t) {
 //   实测：set 之后读出 2 条 → reload 之后读出 0 条。所以：
 //     ① bundle 必须带 Root.plist（兜底）；
 //     ② 要刷新表格用 reloadData，绝对不要用 reloadSpecifiers。
-@interface CPUWatcherPrefsController : PSListController
-@property (nonatomic, strong) UIAlertController *scanAlert;
-@end
-
 @implementation CPUWatcherPrefsController
 
 - (void)viewDidLoad {
@@ -711,14 +703,6 @@ static NSString *CWFormatTierShort(CWTier t) {
 
 #pragma mark - 冲突扫描结果页
 
-@interface CWConflictViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) NSDictionary *result;
-@property (nonatomic, strong) NSArray *tweaks;
-@property (nonatomic, strong) NSArray *conflicts;
-@property (nonatomic, strong) UITableView *table;
-- (instancetype)initWithResult:(NSDictionary *)r;
-@end
-
 @implementation CWConflictViewController
 - (instancetype)initWithResult:(NSDictionary *)r {
     if ((self = [super init])) {
@@ -842,13 +826,6 @@ static NSString *CWFormatTierShort(CWTier t) {
 }
 @end
 
-@interface CWConflictDetailViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) NSDictionary *tweak;
-@property (nonatomic, strong) NSArray *hooks;
-@property (nonatomic, strong) UITableView *table;
-- (instancetype)initWithTweak:(NSDictionary *)t;
-@end
-
 @implementation CWConflictDetailViewController
 - (instancetype)initWithTweak:(NSDictionary *)t {
     if ((self = [super init])) {
@@ -888,3 +865,21 @@ static NSString *CWFormatTierShort(CWTier t) {
     return cell;
 }
 @end
+
+#pragma mark - P4 扫描完成回调（C 函数实现，引用前置声明的 gVisiblePrefs）
+
+static void CWScanDoneCallback(CFNotificationCenterRef center, void *observer,
+                               CFNotificationName name, const void *object, CFDictionaryRef userInfo) {
+    if (!name) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gVisiblePrefs) [gVisiblePrefs cwScanDidFinish];
+    });
+}
+static void cwRegisterScanDoneOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                        CWScanDoneCallback, CW_NOTIFY_SCAN_DONE, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+    });
+}
