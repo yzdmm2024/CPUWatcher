@@ -1,0 +1,34 @@
+#!/bin/sh
+# postinst — CPUWatcher 安装后处理
+#
+# 硬性约束：这里绝不 respring、绝不 killall SpringBoard。
+# 用户自己决定什么时候重启，避免安装脚本替用户做危险动作。
+
+set -u
+
+JB="/var/jb"
+DATA="/var/mobile/Media/CPUWatcher"
+HELPER="$JB/usr/bin/cpuwatchctl"
+
+# 1) 数据目录：建在用户区，属主给 mobile，保证设置面板（mobile 身份）能读能写。
+#    失败也不阻断安装。
+mkdir -p "$DATA" 2>/dev/null || true
+chown mobile:mobile "$DATA" 2>/dev/null || true
+chmod 0755 "$DATA" 2>/dev/null || true
+
+# 2) 特权助手：setuid root 是它能跨进程采样的唯一来源。
+#    这里再兜一次（打包时已设过），确保某些解包工具丢掉权限位时也能恢复。
+if [ -f "$HELPER" ]; then
+    chown root:wheel "$HELPER" 2>/dev/null || true
+    chmod 4755 "$HELPER" 2>/dev/null || true
+fi
+
+# 3) 自检输出，方便在 Sileo 日志里确认安装结果
+if [ -f "$HELPER" ]; then
+    echo "CPUWatcher: helper = $HELPER (mode $(stat -c '%a' "$HELPER" 2>/dev/null || echo '?'))"
+else
+    echo "CPUWatcher: 警告 —— 未找到 $HELPER，插件将退化为受限模式"
+fi
+
+echo "CPUWatcher: 安装完成。请自行重启桌面（Respring）使插件生效。"
+exit 0

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 让 helper 在越狱环境下以平台身份运行，摆脱 App 沙盒限制 -->
+	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+
+	<!-- 允许对其它进程取 task port（采样剖析 / 读取真实加载的 dylib 列表用） -->
+	<key>task_for_pid-allow</key>
+	<true/>
+	<key>com.apple.system-task-ports</key>
+	<true/>
+	<key>com.apple.system-task-ports.read</key>
+	<true/>
+	<key>get-task-allow</key>
+	<true/>
+	<key>com.apple.private.cs.debugger</key>
+	<true/>
+
+	<!-- 读取进程信息与能耗记账（proc_pidinfo / proc_pid_rusage） -->
+	<key>com.apple.private.kernel.work-queue</key>
+	<true/>
+	<key>com.apple.private.memorystatus</key>
+	<true/>
+</dict>
+</plist>

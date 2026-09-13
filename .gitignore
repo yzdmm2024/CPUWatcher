@@ -1,0 +1,17 @@
+# Theos 构建产物
+.theos/
+packages/
+*.deb
+*.ipa
+*.dylib
+*.o
+
+# 系统 / 编辑器
+.DS_Store
+*.swp
+Thumbs.db
+
+# 本地构建产物目录
+构建中间/
+输出成品/
+stage/
