@@ -27,6 +27,11 @@
 // 这是拿到真实注入清单的唯一零风险途径：不用 task_for_pid、不读别人内存。
 #define CW_NOTIFY_DUMP_INJECTED CFSTR("com.axs.cpuwatcher.dumpinjected")
 
+// 插件冲突扫描：面板 -> HUD 请求扫描；HUD 扫描完成 -> 面板。
+// 扫描在 SpringBoard 后台线程进行，完成后广播 SCAN_DONE，面板据此读取结果文件。
+#define CW_NOTIFY_SCAN_CONFLICTS CFSTR("com.axs.cpuwatcher.scan.conflicts")
+#define CW_NOTIFY_SCAN_DONE      CFSTR("com.axs.cpuwatcher.scan.done")
+
 // ---- HUD 状态回报（SpringBoard -> 面板）------------------------------------
 // Darwin 通知只能传名字、不能带数据，所以用「一个状态一个名字」的方式把
 // 布尔级结论传回来。面板注册这几个名字的观察者，把最后收到的那个显示出来。

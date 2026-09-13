@@ -7,6 +7,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import "CWCommon.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #import "CWCommon.h"
+#import "CWConflictScan.h"
 
 #define CWHUD_SNAPSHOT    CW_SNAPSHOT_PATH
 // 快照超过这个秒数没更新，就认为数据源已停（面板已返回），显示待机。
