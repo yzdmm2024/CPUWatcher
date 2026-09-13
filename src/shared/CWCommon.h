@@ -7,7 +7,7 @@
 
 // 版本号：改版本时同步改这里 + control + bundle Info.plist（CI 会校验三者一致）。
 // 规则：小改动 +0.1（0.1.0 → 0.1.1），大改动 +1.0。
-#define CW_VERSION_STRING "0.1.3"
+#define CW_VERSION_STRING "0.1.4"
 
 // 数据落在用户区（不是越狱目录），方便 Filza / 爱思 / 文件 App 直接取走，
 // 也避免往 /var/jb 写导致越狱目录权限被搅乱。
@@ -15,6 +15,8 @@
 #define CW_SNAPSHOT_PATH @"/var/mobile/Media/CPUWatcher/snapshot.json"
 #define CW_STATE_PATH    @"/var/mobile/Media/CPUWatcher/state.json"
 #define CW_INJECTED_PATH @"/var/mobile/Media/CPUWatcher/injected.json"
+// 插件冲突扫描（IMP 归属）结果：SpringBoard 内的 HUD 写出，设置面板读取。
+#define CW_CONFLICT_PATH @"/var/mobile/Media/CPUWatcher/conflicts.json"
 // 悬浮窗自己在 SpringBoard 里写的事件日志（收到什么通知、有没有找到 scene、窗有没有建出来）。
 // 它存在的唯一目的：把"悬浮窗没出来"从"猜"变成"读"。
 #define CW_HUD_STATUS_PATH @"/var/mobile/Media/CPUWatcher/hud_status.json"
