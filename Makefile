@@ -9,8 +9,9 @@ export GO_EASY_ON_ME = 1
 include $(THEOS)/makefiles/common.mk
 
 # ---------------------------------------------------------------------------
-# 1) 悬浮窗 Tweak：只注入 SpringBoard。
-#    硬性约束：%ctor 里不做任何 IO / 不起定时器，只有用户显式开启悬浮窗后才建窗。
+# 1) SpringBoard 驻留代理 Tweak：只注入 SpringBoard。
+#    硬性约束：%ctor 里不做任何 IO / 不起定时器、不建视图；所有工作都是用户
+#    点按钮后通过 Darwin 通知触发。不存在常驻后台行为。
 # ---------------------------------------------------------------------------
 TWEAK_NAME = CPUWatcherHUD
 # CWCommon.m 只提供 JSON 原子写与公共路径，不含任何定时器/线程，注入 SpringBoard 是安全的。

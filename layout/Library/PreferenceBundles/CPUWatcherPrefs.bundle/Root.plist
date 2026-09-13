@@ -94,28 +94,6 @@
 			<string>runConflictScan:</string>
 		</dict>
 
-		<!-- ============ 悬浮窗 ============ -->
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>悬浮窗</string>
-			<key>footerText</key>
-			<string>开启后，只有在「实时监控」页处于前台时才显示悬浮窗；返回上级页立即消失并停止刷新。</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>label</key>
-			<string>监控页显示悬浮窗</string>
-			<key>defaults</key>
-			<string>com.axs.cpuwatcher</string>
-			<key>key</key>
-			<string>hudWithMonitorPage</string>
-			<key>default</key>
-			<false/>
-		</dict>
-
 		<!-- ============ 安全设计 ============ -->
 		<dict>
 			<key>cell</key>
@@ -123,7 +101,7 @@
 			<key>label</key>
 			<string>安全设计</string>
 			<key>footerText</key>
-			<string>① 不注册任何 LaunchDaemon，开机零执行；② 悬浮窗不 hook 任何系统方法，只监听通知；③ 采集进程有 60 秒硬性存活上限与孤儿看门狗；④ 数据写在 /var/mobile/Media/CPUWatcher，不污染越狱目录。</string>
+			<string>① 不注册任何 LaunchDaemon，开机零执行；② SpringBoard 内代理不 hook 任何系统方法，只监听通知；③ 采集进程有 60 秒硬性存活上限与孤儿看门狗；④ 数据写在 /var/mobile/Media/CPUWatcher，不污染越狱目录。</string>
 		</dict>
 	</array>
 </dict>

@@ -58,9 +58,8 @@ static void CWScanDoneCallback(CFNotificationCenterRef center, void *observer,
                                CFNotificationName name, const void *object, CFDictionaryRef userInfo);
 static void cwRegisterScanDoneOnce(void);
 
-static NSString * const kPrefsSuite      = @"com.axs.cpuwatcher";
-static NSString * const kPrefHUDWithPage = @"hudWithMonitorPage";
-static NSString * const kPrefSortMode    = @"lastSortMode";
+static NSString * const kPrefsSuite   = @"com.axs.cpuwatcher";
+static NSString * const kPrefSortMode = @"lastSortMode";
 
 #pragma mark - 跨进程配置读写（rootless 下这里最容易翻车）
 
@@ -109,69 +108,6 @@ static void CWPrefSet(NSString *key, id value) {
                              (__bridge CFPropertyListRef)value,
                              CFSTR("com.axs.cpuwatcher"));
     CFPreferencesAppSynchronize(CFSTR("com.axs.cpuwatcher"));
-}
-
-static void CWHUDSend(BOOL on) {
-    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                         on ? CW_NOTIFY_HUD_ON : CW_NOTIFY_HUD_OFF,
-                                         NULL, NULL, true);
-}
-
-#pragma mark - HUD 状态回报接收
-
-// HUD 在 SpringBoard 里把「收到通知 / 有没有 scene / 窗有没有建出来」逐个回报过来。
-// 通知只能带名字，所以用「一个状态一个名字」的方式传回结论。
-static NSString *gLastHUDState = nil;
-static NSTimeInterval gLastHUDStateAt = 0;
-
-static void CWHUDStateCallback(CFNotificationCenterRef center,
-                               void *observer,
-                               CFNotificationName name,
-                               const void *object,
-                               CFDictionaryRef userInfo) {
-    if (!name) return;
-    gLastHUDState = [(__bridge NSString *)name copy];
-    gLastHUDStateAt = [NSDate timeIntervalSinceReferenceDate];
-}
-
-static void CWHUDStateRegisterOnce(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        CFNotificationCenterRef dc = CFNotificationCenterGetDarwinNotifyCenter();
-        NSArray<NSString *> *names = @[
-            (__bridge NSString *)CW_NOTIFY_HUDST_SHOWN,
-            (__bridge NSString *)CW_NOTIFY_HUDST_NOSCENE,
-            (__bridge NSString *)CW_NOTIFY_HUDST_NOCTOR,
-            (__bridge NSString *)CW_NOTIFY_HUDST_HIDDEN,
-            (__bridge NSString *)CW_NOTIFY_HUDST_WRITEFAIL,
-            (__bridge NSString *)CW_NOTIFY_HUDST_DUMPOK,
-            (__bridge NSString *)CW_NOTIFY_HUDST_DUMPFAIL,
-        ];
-        for (NSString *n in names) {
-            CFNotificationCenterAddObserver(dc, NULL, CWHUDStateCallback,
-                                            (__bridge CFStringRef)n, NULL,
-                                            CFNotificationSuspensionBehaviorDeliverImmediately);
-        }
-    });
-}
-
-/// 把最近一次回报翻译成人话。没有回报本身也是关键信息。
-static NSString *CWHUDStateText(void) {
-    if (!gLastHUDState) {
-        return @"❌ 完全没有回报 —— 说明通知没送达，或 CPUWatcherHUD.dylib 没被注入 "
-                "SpringBoard（装/升级完 deb 后必须 Respring 一次）";
-    }
-    NSString *suffix = [gLastHUDState lastPathComponent] ?: gLastHUDState;
-    NSString *human = suffix;
-    if ([suffix isEqualToString:@"shown"])    human = @"✅ shown 窗已建出";
-    else if ([suffix isEqualToString:@"noscene"]) human = @"⚠️ noscene 找不到 UIWindowScene";
-    else if ([suffix isEqualToString:@"nomain"])  human = @"⚠️ 回调异常";
-    else if ([suffix isEqualToString:@"hidden"])  human = @"已隐藏";
-    else if ([suffix isEqualToString:@"writefail"]) human = @"事件日志写不进 Media 目录";
-    else if ([suffix isEqualToString:@"dumpok"])   human = @"清单已写出";
-    else if ([suffix isEqualToString:@"dumpfail"]) human = @"清单写失败";
-    return [NSString stringWithFormat:@"%@（%.1f 秒前）", human,
-            [NSDate timeIntervalSinceReferenceDate] - gLastHUDStateAt];
 }
 
 #pragma mark - helper 生命周期
@@ -253,9 +189,12 @@ static NSString *CWHUDStateText(void) {
 #pragma mark - 实时监控页（纯 UIViewController，不用任何私有列表 API）
 
 typedef NS_ENUM(NSInteger, CWSortMode) {
-    CWSortByCPU = 0,
-    CWSortByEnergy,     // 纳焦/秒 —— 抓「CPU 不高但耗电」的插件
-    CWSortByWakeups,    // 中断唤醒次数/秒 —— 抓「不休眠、反复唤醒」的插件
+    CWSortByCPU = 0,     // CPU 占用
+    CWSortByMemory,      // 内存占用
+    CWSortByWakeups,     // 中断唤醒次数/秒
+    CWSortByThreads,     // 线程数
+    CWSortByName,        // 进程名（字母序，稳定不跳动）
+    CWSortByEnergy,      // 能耗（仅本机支持时）
 };
 
 @interface CWMonitorViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
@@ -264,7 +203,9 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UILabel *statusLabel;
-@property (nonatomic, strong) UISegmentedControl *sortControl;
+@property (nonatomic, strong) UILabel *legendLabel;
+@property (nonatomic, strong) UIBarButtonItem *sortButton;
+@property (nonatomic, strong) UIBarButtonItem *pauseButton;
 @property (nonatomic, strong) CWSnapshot *snapshot;
 @property (nonatomic, strong) NSArray<CWProcInfo *> *sorted;
 @property (nonatomic, assign) CWSortMode sortMode;
@@ -272,6 +213,7 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 @property (nonatomic, assign) BOOL energyAvailable;
 @property (nonatomic, assign) NSInteger helperMisses;
 @property (nonatomic, copy)   NSString *statusText;
+@property (nonatomic, assign) BOOL paused;
 @end
 
 // 指向当前可见的监控页，用于「开关一拨就立刻生效」。
@@ -285,7 +227,6 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
     self.title = @"实时监控";
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.sortMode = (CWSortMode)[CWPrefGet2(kPrefSortMode) integerValue];
-    CWHUDStateRegisterOnce();
 
     _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 52)];
     _statusLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
@@ -294,17 +235,34 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
     _statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     _statusText = @"准备中…";
 
-    _sortControl = [[UISegmentedControl alloc] initWithItems:@[ @"CPU", @"耗电", @"唤醒" ]];
-    _sortControl.selectedSegmentIndex = (NSInteger)self.sortMode;
-    [_sortControl addTarget:self action:@selector(onSortChanged:) forControlEvents:UIControlEventValueChanged];
-
     _table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
     _table.dataSource = self;
     _table.delegate = self;
     _table.rowHeight = 58.0;
+
+    _legendLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _legendLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
+    _legendLabel.textColor = [UIColor tertiaryLabelColor];
+    _legendLabel.numberOfLines = 0;
+    _legendLabel.text = @"提示：点右上角「排序」选排序方式，点「暂停」冻结列表；\n"
+                         @"长按或点击某行可复制；\n"
+                         @"列表里的「Preferences」是 iOS 设置 App 本身，不是插件。";
+    _legendLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    _sortButton = [[UIBarButtonItem alloc] initWithTitle:@"排序"
+                                                   style:UIBarButtonItemStylePlain
+                                                  target:self
+                                                  action:@selector(showSortMenu:)];
+    _pauseButton = [[UIBarButtonItem alloc] initWithTitle:@"暂停"
+                                                    style:UIBarButtonItemStylePlain
+                                                   target:self
+                                                   action:@selector(togglePause:)];
+    self.navigationItem.rightBarButtonItems = @[ _pauseButton, _sortButton ];
+    [self updateSortButtonTitle];
+
     [self.view addSubview:_statusLabel];
-    [self.view addSubview:_sortControl];
     [self.view addSubview:_table];
+    [self.view addSubview:_legendLabel];
 
     _session = [CWHelperSession new];
     _fallbackSampler = [CWSampler new];
@@ -317,16 +275,57 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width;
     CGFloat top = self.view.safeAreaInsets.top;
+    CGFloat bottom = self.view.safeAreaInsets.bottom;
     _statusLabel.frame = CGRectMake(16, top + 6, w - 32, 52);
-    _sortControl.frame = CGRectMake(16, top + 62, w - 32, 32);
-    _table.frame = CGRectMake(0, top + 100, w, self.view.bounds.size.height - top - 100);
+    CGFloat legendH = 52.0;
+    _legendLabel.frame = CGRectMake(16, self.view.bounds.size.height - bottom - legendH, w - 32, legendH);
+    _table.frame = CGRectMake(0, top + 58, w, self.view.bounds.size.height - top - bottom - legendH - 58);
 }
 
-- (void)onSortChanged:(UISegmentedControl *)sc {
-    self.sortMode = (CWSortMode)sc.selectedSegmentIndex;
-    CWPrefSet(kPrefSortMode, @(self.sortMode));
-    [self resort];
-    [self.table reloadData];
+- (void)updateSortButtonTitle {
+    NSString *name = @"CPU";
+    switch (self.sortMode) {
+        case CWSortByMemory:  name = @"内存"; break;
+        case CWSortByWakeups: name = @"唤醒"; break;
+        case CWSortByThreads: name = @"线程"; break;
+        case CWSortByName:    name = @"名称"; break;
+        case CWSortByEnergy:  name = @"能耗"; break;
+        default:              name = @"CPU";  break;
+    }
+    _sortButton.title = [NSString stringWithFormat:@"排序：%@", name];
+}
+
+- (void)showSortMenu:(id)sender {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"排序方式"
+                                                                message:nil
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSNumber *> *modes = @[ @(CWSortByCPU), @(CWSortByMemory), @(CWSortByWakeups),
+                                    @(CWSortByThreads), @(CWSortByName), @(CWSortByEnergy) ];
+    NSArray<NSString *> *titles = @[ @"CPU 占用", @"内存占用", @"唤醒次数/秒",
+                                     @"线程数", @"进程名（稳定不跳动）", @"能耗（若支持）" ];
+    for (NSUInteger i = 0; i < modes.count; i++) {
+        CWSortMode m = (CWSortMode)[modes[i] integerValue];
+        NSString *t = titles[i];
+        UIAlertActionStyle style = (m == self.sortMode) ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault;
+        [ac addAction:[UIAlertAction actionWithTitle:t style:style handler:^(UIAlertAction *action) {
+            self.sortMode = m;
+            CWPrefSet(kPrefSortMode, @(self.sortMode));
+            [self updateSortButtonTitle];
+            [self resort];
+            [self.table reloadData];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)togglePause:(id)sender {
+    self.paused = !self.paused;
+    _pauseButton.title = self.paused ? @"继续" : @"暂停";
+    if (!self.paused) {
+        [self resort];
+        [self.table reloadData];
+    }
 }
 
 #pragma mark 生命周期的核心：进来才开，出去就关
@@ -370,7 +369,6 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
                                                 userInfo:nil
                                                  repeats:YES];
 
-    if ([CWPrefGet2(kPrefHUDWithPage) boolValue]) CWHUDSend(YES);
     [self tick];
 }
 
@@ -379,9 +377,7 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
     self.timer = nil;
     [self.session stop];
 
-    if ([CWPrefGet2(kPrefHUDWithPage) boolValue]) CWHUDSend(NO);
-
-    // 面板离开后不留快照，避免悬浮窗或别的工具读到陈旧数据
+    // 面板离开后不留快照，避免读到陈旧数据
     [[NSFileManager defaultManager] removeItemAtPath:CWSnapshotPath() error:NULL];
     [[NSFileManager defaultManager] removeItemAtPath:CWStatePath() error:NULL];
 }
@@ -420,6 +416,12 @@ static NSString *CWFormatTierShort(CWTier t) {
     } else {
         self.snapshot = [self.fallbackSampler sample];
     }
+
+    // 暂停时继续收数据，但不刷新表格，方便用户看清某一行、复制内容
+    if (self.paused) {
+        self.statusLabel.text = [NSString stringWithFormat:@"%@   [已暂停，列表不动]", self.statusText];
+        return;
+    }
     self.statusLabel.text = self.statusText;
     [self resort];
     [self.table reloadData];
@@ -432,16 +434,38 @@ static NSString *CWFormatTierShort(CWTier t) {
     self.energyAvailable = NO;
     for (CWProcInfo *p in procs) { if (p.hasEnergy) { self.energyAvailable = YES; break; } }
 
+    // 以当前排序键为主，进程名为副键，避免数值相等时顺序乱跳。
     NSArray<CWProcInfo *> *arr = [procs sortedArrayUsingComparator:^NSComparisonResult(CWProcInfo *a, CWProcInfo *b) {
-        double av = 0, bv = 0;
+        NSComparisonResult r = NSOrderedSame;
         switch (self.sortMode) {
-            case CWSortByEnergy:  av = a.energyNJPerSec; bv = b.energyNJPerSec; break;
-            case CWSortByWakeups: av = a.wakeupsPerSec;  bv = b.wakeupsPerSec;  break;
-            default:              av = a.cpuPercent;     bv = b.cpuPercent;     break;
+            case CWSortByMemory:
+                if (a.memBytes > b.memBytes) r = NSOrderedAscending;
+                else if (a.memBytes < b.memBytes) r = NSOrderedDescending;
+                break;
+            case CWSortByWakeups:
+                if (a.wakeupsPerSec > b.wakeupsPerSec) r = NSOrderedAscending;
+                else if (a.wakeupsPerSec < b.wakeupsPerSec) r = NSOrderedDescending;
+                break;
+            case CWSortByThreads:
+                if (a.threadCount > b.threadCount) r = NSOrderedAscending;
+                else if (a.threadCount < b.threadCount) r = NSOrderedDescending;
+                break;
+            case CWSortByName:
+                r = [a.name localizedCaseInsensitiveCompare:b.name];
+                break;
+            case CWSortByEnergy:
+                if (a.energyNJPerSec > b.energyNJPerSec) r = NSOrderedAscending;
+                else if (a.energyNJPerSec < b.energyNJPerSec) r = NSOrderedDescending;
+                break;
+            default: // CWSortByCPU
+                if (a.cpuPercent > b.cpuPercent) r = NSOrderedAscending;
+                else if (a.cpuPercent < b.cpuPercent) r = NSOrderedDescending;
+                break;
         }
-        if (av > bv) return NSOrderedAscending;
-        if (av < bv) return NSOrderedDescending;
-        return NSOrderedSame;
+        if (r == NSOrderedSame) {
+            r = [a.name localizedCaseInsensitiveCompare:b.name];
+        }
+        return r;
     }];
     self.sorted = arr;
 }
@@ -461,7 +485,7 @@ static NSString *CWFormatTierShort(CWTier t) {
                       self.snapshot.totalCPUPercent,
                       CWFormattedBytes(self.snapshot.memUsedBytes),
                       CWFormattedBytes(self.snapshot.memTotalBytes)];
-    if (self.sortMode != CWSortByCPU && !self.energyAvailable) {
+    if (self.sortMode == CWSortByEnergy && !self.energyAvailable) {
         head = [head stringByAppendingString:@"   （本机无能耗数据，该列不可用）"];
     }
     return head;
@@ -483,15 +507,29 @@ static NSString *CWFormatTierShort(CWTier t) {
 
     CWProcInfo *p = procs[indexPath.row];
 
-    // 第一行永远显示当前排序依据，第二行显示其它维度，方便交叉判断
+    // 第一行显示当前排序依据 + 进程名，方便截图和复制
     NSString *primary;
-    if (self.sortMode == CWSortByEnergy) {
-        primary = p.hasEnergy ? [NSString stringWithFormat:@"%@   %@", CWFormatPower(p.energyNJPerSec), p.name]
-                              : [NSString stringWithFormat:@"能耗不可读   %@", p.name];
-    } else if (self.sortMode == CWSortByWakeups) {
-        primary = [NSString stringWithFormat:@"%.0f 次/秒   %@", p.wakeupsPerSec, p.name];
-    } else {
-        primary = [NSString stringWithFormat:@"%.1f%%   %@", p.cpuPercent, p.name];
+    switch (self.sortMode) {
+        case CWSortByMemory:
+            primary = [NSString stringWithFormat:@"%@   %@",
+                       p.memBytes ? CWFormattedBytes(p.memBytes) : @"—", p.name];
+            break;
+        case CWSortByWakeups:
+            primary = [NSString stringWithFormat:@"%.0f/s   %@", p.wakeupsPerSec, p.name];
+            break;
+        case CWSortByThreads:
+            primary = [NSString stringWithFormat:@"%ld 线程   %@", (long)p.threadCount, p.name];
+            break;
+        case CWSortByName:
+            primary = p.name;
+            break;
+        case CWSortByEnergy:
+            primary = p.hasEnergy ? [NSString stringWithFormat:@"%@   %@", CWFormatPower(p.energyNJPerSec), p.name]
+                                  : [NSString stringWithFormat:@"能耗不可读   %@", p.name];
+            break;
+        default:
+            primary = [NSString stringWithFormat:@"%.1f%%   %@", p.cpuPercent, p.name];
+            break;
     }
     cell.textLabel.text = primary;
 
@@ -500,6 +538,26 @@ static NSString *CWFormatTierShort(CWTier t) {
         (long)p.pid, p.cpuPercent, p.wakeupsPerSec,
         p.memBytes ? CWFormattedBytes(p.memBytes) : @"—", (long)p.threadCount];
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.sorted.count) return;
+    CWProcInfo *p = self.sorted[indexPath.row];
+    NSString *text = [NSString stringWithFormat:
+        @"%@\nPID %ld   CPU %.1f%%   唤醒 %.0f/s   内存 %@   线程 %ld",
+        p.name, (long)p.pid, p.cpuPercent, p.wakeupsPerSec,
+        p.memBytes ? CWFormattedBytes(p.memBytes) : @"—", (long)p.threadCount];
+    [UIPasteboard generalPasteboard].string = text;
+    // 把状态栏临时改成复制提示，0.8 秒后恢复
+    NSString *saved = self.statusLabel.text;
+    self.statusLabel.text = [NSString stringWithFormat:@"已复制：%@", p.name];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if ([self.statusLabel.text isEqualToString:[NSString stringWithFormat:@"已复制：%@", p.name]]) {
+            self.statusLabel.text = saved;
+        }
+    });
 }
 
 @end
@@ -667,9 +725,9 @@ static NSString *CWFormatTierShort(CWTier t) {
     if (!plugins) {
         [self cwShowAlert:@"读取失败"
                   message:@"没拿到 SpringBoard 的插件清单。\n\n可能原因：\n"
-                          @"① 悬浮窗组件（CPUWatcherHUD.dylib）还没被注入 SpringBoard；\n"
+                          @"① CPUWatcherHUD.dylib 还没被注入 SpringBoard；\n"
                           @"② 装完 deb 后还没注销过 SpringBoard。\n\n"
-                          @"提示：本功能依赖 HUD 组件，装完 deb 后请注销（Respring）一次再试。"];
+                          @"提示：装完 deb 后请注销（Respring）一次再试。"];
         return;
     }
 
