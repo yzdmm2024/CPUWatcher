@@ -31,8 +31,18 @@ static NSString *CWFormatTierShort(CWTier t);
 @class CWConflictDetailViewController;
 static __weak CPUWatcherPrefsController *gVisiblePrefs = nil;
 
-@interface CPUWatcherPrefsController ()
-@property (nonatomic, strong) UIAlertController *scanAlert;
+// 用 category 声明方法（不要求主类完整可见，且不与末尾主 @interface 冲突）；
+// scanAlert 属性放到主 @interface 里（extension 不能放在主类声明之前）。
+@interface CPUWatcherPrefsController (ScanPrivate)
+- (void)runConflictScan:(id)sender;
+- (void)cwScanDidFinish;
+- (void)cwPresentConflictResult;
+@end
+@interface CWConflictViewController (Init)
+- (instancetype)initWithResult:(NSDictionary *)r;
+@end
+@interface CWConflictDetailViewController (Init)
+- (instancetype)initWithTweak:(NSDictionary *)t;
 @end
 
 // HUD 扫描完成后广播 SCAN_DONE，回调里把结果页推出来。
@@ -510,6 +520,7 @@ static NSString *CWFormatTierShort(CWTier t) {
 //     ① bundle 必须带 Root.plist（兜底）；
 //     ② 要刷新表格用 reloadData，绝对不要用 reloadSpecifiers。
 @interface CPUWatcherPrefsController : PSListController
+@property (nonatomic, strong) UIAlertController *scanAlert;
 @end
 
 @implementation CPUWatcherPrefsController
