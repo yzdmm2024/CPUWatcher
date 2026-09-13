@@ -99,6 +99,33 @@
 
 @end
 
+#pragma mark - 状态回报
+
+// 「悬浮窗没出来」这种情况必须能定位到是哪一步断的，否则只能猜。
+// 断点有三处：① 通知压根没送到（dylib 没注入 / 通知名不匹配）；
+//             ② 送到了但找不到 UIWindowScene（窗建不出来，静默 return）；
+//             ③ 窗建出来了但没显示（层级 / 可见性）。
+// 这里把每一步都回报出去：写一份文件（人可读）+ 发一条 Darwin 通知（不依赖文件权限）。
+// 通知只能带名字、不能带数据，所以用「一个状态一个名字」的笨办法 ——
+// 面板把最后收到的那个名字显示出来，一眼就知道卡在哪。
+static void CWHUDReport(CFStringRef state, NSString *extra) {
+    // ① 发通知：这条通道不依赖任何文件权限，是主证据
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         state, NULL, NULL, true);
+    // ② 尽力落盘：写不进也不影响①（SpringBoard 沙盒可能拒绝写 Media 目录）
+    CWEnsureDataDir();
+    BOOL ok = CWWriteJSONAtomically(@{ @"ts"    : @([NSDate timeIntervalSinceReferenceDate]),
+                                       @"pid"   : @(getpid()),
+                                       @"state" : (__bridge NSString *)state,
+                                       @"extra" : extra ?: @"" },
+                                    CWHUDStatusPath());
+    if (!ok) {
+        // 文件写不进去这件事本身也是重要信息，用通知再补报一次
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CW_NOTIFY_HUDST_WRITEFAIL, NULL, NULL, true);
+    }
+}
+
 #pragma mark - 控制器
 
 @interface CWHUDController : NSObject
@@ -118,15 +145,27 @@
     return inst;
 }
 
+/// 拿 UIWindowScene。iOS 13 之后窗口**必须**挂在 scene 上，否则
+/// [[UIWindow alloc] initWithFrame:] 出来的窗永远不会显示 —— 而且不报错，
+/// 表现就是"通知也收到了、窗也建了，但屏幕上什么都没有"。
+/// 以前这里只查 connectedScenes，查不到就直接 return；现在补三级兜底。
 - (UIWindowScene *)activeScene {
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+    UIApplication *app = UIApplication.sharedApplication;
+
+    // ① 前台活跃的 scene
+    for (UIScene *s in app.connectedScenes) {
         if ([s isKindOfClass:[UIWindowScene class]] &&
             s.activationState == UISceneActivationStateForegroundActive) {
             return (UIWindowScene *)s;
         }
     }
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+    // ② 任意一个 window scene（SpringBoard 的主 scene 有时不报 ForegroundActive）
+    for (UIScene *s in app.connectedScenes) {
         if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
+    }
+    // ③ 从已有窗口反推（SpringBoard 一定已经有自己的窗口）
+    for (UIWindow *w in app.windows) {
+        if (w.windowScene) return w.windowScene;
     }
     return nil;
 }
@@ -135,7 +174,14 @@
     if (self.window) { [self refresh]; return; }
 
     UIWindowScene *scene = [self activeScene];
-    if (!scene) return;   // 没有场景就不要硬建窗口
+    if (!scene) {
+        // 不静默失败：把"找不到 scene"这件事报出去
+        CWHUDReport(CW_NOTIFY_HUDST_NOSCENE,
+                    [NSString stringWithFormat:@"connectedScenes=%lu windows=%lu",
+                     (unsigned long)UIApplication.sharedApplication.connectedScenes.count,
+                     (unsigned long)UIApplication.sharedApplication.windows.count]);
+        return;
+    }
 
     CGFloat w = 132.0, h = 44.0;
     CGFloat x = 16.0, y = 90.0;
@@ -156,12 +202,21 @@
     [win.rootViewController.view addSubview:pill];
     self.window = win;
 
+    if (!win.rootViewController) {
+        CWHUDReport(CW_NOTIFY_HUDST_NOCTOR, @"rootViewController 建不出来");
+        return;
+    }
+
     [self refresh];
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                  target:self
-                                                selector:@selector(refresh)
-                                                userInfo:nil
-                                                 repeats:YES];
+    // 刷新定时器挂在主 run loop 的 common modes 上：
+    // 否则用户一滑动手势（tracking mode），刷新就停了。
+    self.timer = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(refresh)
+                                       userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
+
+    CWHUDReport(CW_NOTIFY_HUDST_SHOWN,
+                [NSString stringWithFormat:@"level=%.0f frame=%@ scene=%@",
+                 win.windowLevel, NSStringFromCGRect(win.frame), NSStringFromClass([scene class])]);
 }
 
 - (void)hide {
@@ -169,6 +224,7 @@
     self.timer = nil;
     self.window.hidden = YES;
     self.window = nil;
+    CWHUDReport(CW_NOTIFY_HUDST_HIDDEN, @"");
 }
 
 - (void)refresh {
@@ -272,11 +328,15 @@ static void CWDumpInjectedImages(void) {
     }
 
     CWEnsureDataDir();
-    CWWriteJSONAtomically(@{ @"ts"      : @([NSDate timeIntervalSinceReferenceDate]),
-                             @"pid"     : @(getpid()),
-                             @"process" : [NSProcessInfo processInfo].processName ?: @"?",
-                             @"plugins" : plugins },
-                          CWInjectedListPath());
+    BOOL ok = CWWriteJSONAtomically(@{ @"ts"      : @([NSDate timeIntervalSinceReferenceDate]),
+                                       @"pid"     : @(getpid()),
+                                       @"process" : [NSProcessInfo processInfo].processName ?: @"?",
+                                       @"plugins" : plugins },
+                                    CWInjectedListPath());
+    // 写成功/失败都回报 —— 失败时面板能直接说清是"写不进 Media 目录"，
+    // 而不是笼统地甩一句"没拿到清单"。
+    CWHUDReport(ok ? CW_NOTIFY_HUDST_DUMPOK : CW_NOTIFY_HUDST_DUMPFAIL,
+                [NSString stringWithFormat:@"%lu 个 dylib", (unsigned long)plugins.count]);
 }
 
 #pragma mark - 通知桥

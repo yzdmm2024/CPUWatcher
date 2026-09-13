@@ -25,7 +25,10 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 #    不注册 launchd、开机零执行。由设置面板 spawn，面板返回即被 kill。
 # ---------------------------------------------------------------------------
 TOOL_NAME = cpuwatchctl
-cpuwatchctl_FILES = src/helper/main.m src/shared/CWCommon.m src/shared/CWSampler.m
+# ⚠️ CWProcShim.m 必须编进本 target：CWSampler.m / CWCommon.m 里调用的
+# CWProcInfoForPid / CWProcRusageForPid / CWProcPathForPid / CWProcShimCaps
+# 的实现就在这里。不编进来 → 工具链接期直接报 Undefined symbols。
+cpuwatchctl_FILES = src/helper/main.m src/shared/CWCommon.m src/shared/CWSampler.m src/shared/CWProcShim.m
 cpuwatchctl_FRAMEWORKS = Foundation
 cpuwatchctl_CFLAGS = -fobjc-arc -Isrc -I$(THEOS_PROJECT_DIR)/src/shared
 cpuwatchctl_INSTALL_PATH = /usr/bin
@@ -39,7 +42,9 @@ include $(THEOS_MAKE_PATH)/tool.mk
 #    表现就是「设置 -> CPU 监视器」直接不显示。
 # ---------------------------------------------------------------------------
 BUNDLE_NAME = CPUWatcherPrefs
-CPUWatcherPrefs_FILES = Preferences/CPUWatcherPrefs.m src/shared/CWCommon.m src/shared/CWSampler.m
+# ⚠️ 同样必须把 CWProcShim.m 编进来：面板内采样（fallbackSampler）走的就是
+# CWSampler.m，缺了实现会在首次调用时因 dynamic_lookup 找不到符号而崩溃。
+CPUWatcherPrefs_FILES = Preferences/CPUWatcherPrefs.m src/shared/CWCommon.m src/shared/CWSampler.m src/shared/CWProcShim.m
 CPUWatcherPrefs_INSTALL_PATH = /Library/PreferenceBundles
 CPUWatcherPrefs_CFLAGS = -fobjc-arc -fobjc-exceptions -Isrc -I$(THEOS_PROJECT_DIR)/src/shared
 CPUWatcherPrefs_FRAMEWORKS = UIKit Foundation

@@ -39,11 +39,19 @@
 @property (nonatomic, assign) NSInteger tier;
 @property (nonatomic, copy)   NSArray<CWProcInfo *> *processes;
 
+// ---- 诊断字段（随快照一起写出去，用于远程定位"为什么是 0"）----
+@property (nonatomic, assign) NSInteger detailOK;    // 成功读到明细的进程数
+@property (nonatomic, assign) NSInteger totalPids;   // 本轮扫描到的进程总数
+@property (nonatomic, copy)   NSString *src;         // 生产者：helper / panel / hud
+@property (nonatomic, copy)   NSString *caps;        // libproc 各入口是否解析成功
+
 - (NSDictionary *)dictionaryRepresentation;
 + (instancetype)snapshotFromDictionary:(NSDictionary *)d;
 @end
 
 @interface CWSampler : NSObject
+/// 标记这份数据是谁采的（helper / panel / hud），会写进快照。
+@property (nonatomic, copy) NSString *samplerTag;
 /// 首次取样没有前值，只能建立基线。调用一次后再进入循环。
 - (void)prime;
 /// 采样一次。两次调用之间的时间差越接近预期，CPU% 越准。

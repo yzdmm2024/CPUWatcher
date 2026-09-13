@@ -29,21 +29,116 @@ static NSString * const kPrefsSuite      = @"com.axs.cpuwatcher";
 static NSString * const kPrefHUDWithPage = @"hudWithMonitorPage";
 static NSString * const kPrefSortMode    = @"lastSortMode";
 
-static id CWPrefGet(NSString *key) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
-    return [d objectForKey:key];
+#pragma mark - 跨进程配置读写（rootless 下这里最容易翻车）
+
+// 面板写出的开关值，在 rootless 环境下实际落在 jbroot 里的域 plist：
+//   /var/jb/var/mobile/Library/Preferences/com.axs.cpuwatcher.plist
+// 而 App / SpringBoard 侧用 suite 或 CFPreferences 都可能读不到同一个位置。
+// 所以读取走三条通道依次试，并把「是哪条命中的」一起返回 ——
+// 自检弹窗会显示它，避免下次又对着"填了不生效"干猜。
+static id CWPrefGet(NSString *key, NSString **sink) {
+    // ① jbroot 共享 plist（rootless 真身，也是 SpringBoard 侧能读到的那份）
+    NSArray<NSString *> *files = @[
+        @"/var/jb/var/mobile/Library/Preferences/com.axs.cpuwatcher.plist",
+        @"/var/mobile/Library/Preferences/com.axs.cpuwatcher.plist"
+    ];
+    for (NSString *p in files) {
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+        if ([d isKindOfClass:[NSDictionary class]] && d[key] != nil) {
+            if (sink) *sink = [NSString stringWithFormat:@"域 plist %@", p];
+            return d[key];
+        }
+    }
+    // ② 容器 suite
+    id v = [[[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite] objectForKey:key];
+    if (v != nil) { if (sink) *sink = @"容器 suite"; return v; }
+
+    // ③ cfprefsd
+    CFPropertyListRef cv = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
+                                                     CFSTR("com.axs.cpuwatcher"));
+    if (cv) { if (sink) *sink = @"cfprefsd"; return CFBridgingRelease(cv); }
+
+    if (sink) *sink = @"三通道都没读到";
+    return nil;
 }
 
+static id CWPrefGet2(NSString *key) { return CWPrefGet(key, NULL); }
+
+// 双写：NSUserDefaults(suite) + CFPreferences。
+// 两条路在 rootless 下会落到不同的位置，都写一遍才能保证面板与 SpringBoard
+// 两侧读到同一个值。
 static void CWPrefSet(NSString *key, id value) {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kPrefsSuite];
     [d setObject:value forKey:key];
     [d synchronize];
+
+    CFPreferencesSetAppValue((__bridge CFStringRef)key,
+                             (__bridge CFPropertyListRef)value,
+                             CFSTR("com.axs.cpuwatcher"));
+    CFPreferencesAppSynchronize(CFSTR("com.axs.cpuwatcher"));
 }
 
 static void CWHUDSend(BOOL on) {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          on ? CW_NOTIFY_HUD_ON : CW_NOTIFY_HUD_OFF,
                                          NULL, NULL, true);
+}
+
+#pragma mark - HUD 状态回报接收
+
+// HUD 在 SpringBoard 里把「收到通知 / 有没有 scene / 窗有没有建出来」逐个回报过来。
+// 通知只能带名字，所以用「一个状态一个名字」的方式传回结论。
+static NSString *gLastHUDState = nil;
+static NSTimeInterval gLastHUDStateAt = 0;
+
+static void CWHUDStateCallback(CFNotificationCenterRef center,
+                               void *observer,
+                               CFNotificationName name,
+                               const void *object,
+                               CFDictionaryRef userInfo) {
+    if (!name) return;
+    gLastHUDState = [(__bridge NSString *)name copy];
+    gLastHUDStateAt = [NSDate timeIntervalSinceReferenceDate];
+}
+
+static void CWHUDStateRegisterOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CFNotificationCenterRef dc = CFNotificationCenterGetDarwinNotifyCenter();
+        NSArray<NSString *> *names = @[
+            (__bridge NSString *)CW_NOTIFY_HUDST_SHOWN,
+            (__bridge NSString *)CW_NOTIFY_HUDST_NOSCENE,
+            (__bridge NSString *)CW_NOTIFY_HUDST_NOCTOR,
+            (__bridge NSString *)CW_NOTIFY_HUDST_HIDDEN,
+            (__bridge NSString *)CW_NOTIFY_HUDST_WRITEFAIL,
+            (__bridge NSString *)CW_NOTIFY_HUDST_DUMPOK,
+            (__bridge NSString *)CW_NOTIFY_HUDST_DUMPFAIL,
+        ];
+        for (NSString *n in names) {
+            CFNotificationCenterAddObserver(dc, NULL, CWHUDStateCallback,
+                                            (__bridge CFStringRef)n, NULL,
+                                            CFNotificationSuspensionBehaviorDeliverImmediately);
+        }
+    });
+}
+
+/// 把最近一次回报翻译成人话。没有回报本身也是关键信息。
+static NSString *CWHUDStateText(void) {
+    if (!gLastHUDState) {
+        return @"❌ 完全没有回报 —— 说明通知没送达，或 CPUWatcherHUD.dylib 没被注入 "
+                "SpringBoard（装/升级完 deb 后必须 Respring 一次）";
+    }
+    NSString *suffix = [gLastHUDState lastPathComponent] ?: gLastHUDState;
+    NSString *human = suffix;
+    if ([suffix isEqualToString:@"shown"])    human = @"✅ shown 窗已建出";
+    else if ([suffix isEqualToString:@"noscene"]) human = @"⚠️ noscene 找不到 UIWindowScene";
+    else if ([suffix isEqualToString:@"nomain"])  human = @"⚠️ 回调异常";
+    else if ([suffix isEqualToString:@"hidden"])  human = @"已隐藏";
+    else if ([suffix isEqualToString:@"writefail"]) human = @"事件日志写不进 Media 目录";
+    else if ([suffix isEqualToString:@"dumpok"])   human = @"清单已写出";
+    else if ([suffix isEqualToString:@"dumpfail"]) human = @"清单写失败";
+    return [NSString stringWithFormat:@"%@（%.1f 秒前）", human,
+            [NSDate timeIntervalSinceReferenceDate] - gLastHUDStateAt];
 }
 
 #pragma mark - helper 生命周期
@@ -146,17 +241,22 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 @property (nonatomic, copy)   NSString *statusText;
 @end
 
+// 指向当前可见的监控页，用于「开关一拨就立刻生效」。
+// weak：页面销毁后自动变 nil，不需要手动清理。
+static __weak CWMonitorViewController *gVisibleMonitor = nil;
+
 @implementation CWMonitorViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"实时监控";
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
-    self.sortMode = (CWSortMode)[CWPrefGet(kPrefSortMode) integerValue];
+    self.sortMode = (CWSortMode)[CWPrefGet2(kPrefSortMode) integerValue];
+    CWHUDStateRegisterOnce();
 
-    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 36)];
+    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 52)];
     _statusLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
-    _statusLabel.numberOfLines = 2;
+    _statusLabel.numberOfLines = 3;
     _statusLabel.textColor = [UIColor secondaryLabelColor];
     _statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     _statusText = @"准备中…";
@@ -175,15 +275,18 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 
     _session = [CWHelperSession new];
     _fallbackSampler = [CWSampler new];
+    // 标记数据来源：面板内采样与助手采样的结果会分别标注，
+    // 出问题时一眼就能看出是哪条路给的数（两条路的权限环境不同）。
+    _fallbackSampler.samplerTag = @"panel";
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width;
     CGFloat top = self.view.safeAreaInsets.top;
-    _statusLabel.frame = CGRectMake(16, top + 6, w - 32, 40);
-    _sortControl.frame = CGRectMake(16, top + 50, w - 32, 32);
-    _table.frame = CGRectMake(0, top + 88, w, self.view.bounds.size.height - top - 88);
+    _statusLabel.frame = CGRectMake(16, top + 6, w - 32, 52);
+    _sortControl.frame = CGRectMake(16, top + 62, w - 32, 32);
+    _table.frame = CGRectMake(0, top + 100, w, self.view.bounds.size.height - top - 100);
 }
 
 - (void)onSortChanged:(UISegmentedControl *)sc {
@@ -197,12 +300,14 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    gVisibleMonitor = self;
     [self startMonitoring];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     // 必须在主线程同步把它杀掉，不能丢给后台队列 —— 用户返回了就必须马上停。
     [self stopMonitoring];
+    if (gVisibleMonitor == self) gVisibleMonitor = nil;
     [super viewWillDisappear:animated];
 }
 
@@ -222,15 +327,8 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
     self.helperMisses = 0;
     self.usingHelper = [self.session startWithIntervalMs:intervalMs duration:CW_HELPER_HARD_LIMIT_SEC];
 
-    if (self.usingHelper) {
-        self.statusText = [NSString stringWithFormat:@"采样助手已启动（PID %d，最长 %d 秒后自动停止）",
-                           self.session.pid, CW_HELPER_HARD_LIMIT_SEC];
-    } else {
+    if (!self.usingHelper) {
         [self.fallbackSampler prime];
-        CWTier t = CWDetectTier();
-        // 降级不装死：明确说清拿不到什么，而不是给个空表让人以为没进程。
-        self.statusText = [NSString stringWithFormat:@"%@：%@\n%@",
-                           CWTierName(t), CWFormatTierShort(t), self.session.failReason ?: @""];
     }
 
     self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0
@@ -239,7 +337,7 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
                                                 userInfo:nil
                                                  repeats:YES];
 
-    if ([CWPrefGet(kPrefHUDWithPage) boolValue]) CWHUDSend(YES);
+    if ([CWPrefGet2(kPrefHUDWithPage) boolValue]) CWHUDSend(YES);
     [self tick];
 }
 
@@ -248,7 +346,7 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
     self.timer = nil;
     [self.session stop];
 
-    if ([CWPrefGet(kPrefHUDWithPage) boolValue]) CWHUDSend(NO);
+    if ([CWPrefGet2(kPrefHUDWithPage) boolValue]) CWHUDSend(NO);
 
     // 面板离开后不留快照，避免悬浮窗或别的工具读到陈旧数据
     [[NSFileManager defaultManager] removeItemAtPath:CWSnapshotPath() error:NULL];

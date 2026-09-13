@@ -62,12 +62,14 @@ gh run list --repo yzdmm2024/CPUWatcher --limit 1
 gh run download <RUN_ID> --repo yzdmm2024/CPUWatcher --dir E:\temp_ci
 ```
 
-CI 里有 5 道护栏，任一不过直接失败：
-1. 产物里不能出现 LaunchDaemon / LaunchAgent
+CI 里有 7 道护栏，任一不过直接失败：
+1. 产物里不能出现 LaunchDaemon / LaunchAgent（开机零执行，白苹果防护）
 2. postinst 不能有 `killall` / `respring`
-3. `cpuwatchctl` 必须是 4755
+3. `cpuwatchctl` 必须是 4755（setuid root 位要活着进 deb）
 4. 签名里必须真的有 `platform-application` + `task_for_pid-allow`
 5. 三个二进制必须是 fat（arm64 + arm64e）
+6. 面板 bundle 必须带 Root.plist（少了面板整片空白）
+7. 版本号三处必须一致（control / bundle Info.plist / 源码 CW_VERSION_STRING 宏）
 
 ## 手工验证（SSH 到设备）
 
@@ -83,6 +85,20 @@ ps -ax | grep cpuwatchctl
 ## 版本规则
 
 小版本 +0.1（`0.1.0` → `0.1.1`），大版本 +1.0。
+
+## 变更记录
+
+- **v0.1.3**（当前）— 修复「CPU 全 0 / 能耗不可读 / 进程名截断」的真根因。
+  - CI 的 iPhoneOS SDK 没有 `libproc.h`，旧代码用 `__has_include` 开关把整个
+    `proc_pidinfo` 分支在**编译期静默裁掉**，装到手机上表现为每进程 CPU 全 0%、
+    内存「—」、线程 0、进程名被截断成 16 字符。
+  - 新增 `CWProcShim`：用 `dlsym(RTLD_DEFAULT)` 运行时解析 `proc_pidinfo` /
+    `proc_pid_rusage` / `proc_pidpath`，配合自声明结构体（尾部留余量），编译/链接期
+    不再依赖任何 SDK 头文件。已编入 `cpuwatchctl` 与 `CPUWatcherPrefs` 两个 target。
+  - 实测 iOS 16.6.1 非 root 即可读到全部明细，去掉所有 `geteuid()==0` 门槛。
+- **v0.1.2** — 面板显示，但去掉了 root 门槛（仍因上面 SDK 缺头问题实际全 0）。
+- **v0.1.1** — 修复面板空白（缺 Root.plist 导致 reloadSpecifiers 清空 specifiers）。
+- **v0.1.0** — 初始版本：按需激活架构、setuid helper、悬浮窗、Root.plist。
 
 ## 待真机验证
 

@@ -11,17 +11,16 @@
 #include <errno.h>
 #include <string.h>
 
-#if __has_include(<libproc.h>)
-#include <libproc.h>
-#define CW_HAVE_LIBPROC_COMMON 1
-#else
-#define CW_HAVE_LIBPROC_COMMON 0
-#endif
+// ⚠️ 不要再引入 libproc.h：CI 的 iPhoneOS SDK 里没有这个头，
+// 用 __has_include 判它会静默把整块功能编译掉（v0.1.2 的真根因）。
+// 一切 libproc 入口统一走自包含的 shim。
+#import "CWProcShim.h"
 
 NSString *CWDataDirPath(void) { return CW_DATA_DIR; }
 NSString *CWSnapshotPath(void) { return CW_SNAPSHOT_PATH; }
 NSString *CWStatePath(void)    { return CW_STATE_PATH; }
 NSString *CWInjectedListPath(void) { return CW_INJECTED_PATH; }
+NSString *CWHUDStatusPath(void) { return CW_HUD_STATUS_PATH; }
 
 NSString *CWFormattedBytes(unsigned long long bytes) {
     double v = (double)bytes;
@@ -86,7 +85,6 @@ static BOOL CWCanListProcesses(void) {
 // 找一个「不是自己、也不是 launchd」的进程，试着读它的 taskinfo。
 // 读得到 => 每进程 CPU / 内存 / 能耗 / 唤醒全部可用。
 static BOOL CWCanReadTaskInfo(void) {
-#if CW_HAVE_LIBPROC_COMMON
     int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
     size_t len = 0;
     if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0) return NO;
@@ -106,12 +104,8 @@ static BOOL CWCanReadTaskInfo(void) {
     free(buf);
     if (probe <= 0) return NO;
 
-    struct proc_taskinfo pti;
-    memset(&pti, 0, sizeof(pti));
-    return proc_pidinfo(probe, PROC_PIDTASKINFO, 0, &pti, (int)sizeof(pti)) > 0;
-#else
-    return NO;
-#endif
+    cw_proc_taskinfo_t pti;
+    return CWProcInfoForPid(probe, &pti) > 0;
 }
 
 CWTier CWDetectTier(void) {

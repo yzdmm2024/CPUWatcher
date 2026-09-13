@@ -23,23 +23,12 @@
 #define FSCALE 65536.0
 #endif
 
-#if __has_include(<libproc.h>)
-#include <libproc.h>
-#define CW_HAVE_LIBPROC 1
-#else
-#define CW_HAVE_LIBPROC 0
-#endif
-
-// 能耗字段（ri_billed_energy / ri_interrupt_wkups）在 rusage_info_v4 里。
-// 用 SDK 的 struct 定义直接取，不手算偏移 —— 手算偏移一旦 SDK 布局变了就是静默读错。
-#if defined(RUSAGE_INFO_V4)
-#define CW_HAVE_RUSAGE_V4 1
-#else
-#define CW_HAVE_RUSAGE_V4 0
-// 这条警告是故意的：没有它，能耗功能会被静默编译掉，
-// CI 日志里看不到任何异常，装到手机上才发现"耗电那一列永远是 0"。
-#warning "RUSAGE_INFO_V4 不可用：能耗/唤醒采集将被编译掉（CPU 采集不受影响）"
-#endif
+// ⚠️ 不要改回 #include <libproc.h>。
+// CI 的 iPhoneOS SDK 里没有这个头文件，用 __has_include 开关会导致整个
+// proc_pidinfo 分支在编译期被静默裁掉（v0.1.2 就是这么翻车的）。
+// 这里统一走自包含的 shim：dlsym 运行时解析 + 自声明结构体。
+// 细节与证据见 CWProcShim.h 顶部。
+#import "CWProcShim.h"
 
 #pragma mark - CWProcInfo
 
@@ -85,6 +74,10 @@
               @"memUsed"   : @(self.memUsedBytes),
               @"memTotal"  : @(self.memTotalBytes),
               @"tier"      : @(self.tier),
+              @"detailOK"  : @(self.detailOK),
+              @"totalPids" : @(self.totalPids),
+              @"src"       : self.src ?: @"?",
+              @"caps"      : self.caps ?: @"?",
               @"processes" : arr };
 }
 + (instancetype)snapshotFromDictionary:(NSDictionary *)d {
@@ -96,6 +89,10 @@
     s.memUsedBytes = (unsigned long long)[d[@"memUsed"] unsignedLongLongValue];
     s.memTotalBytes = (unsigned long long)[d[@"memTotal"] unsignedLongLongValue];
     s.tier = [d[@"tier"] integerValue];
+    s.detailOK = [d[@"detailOK"] integerValue];
+    s.totalPids = [d[@"totalPids"] integerValue];
+    s.src = [d[@"src"] isKindOfClass:[NSString class]] ? d[@"src"] : @"?";
+    s.caps = [d[@"caps"] isKindOfClass:[NSString class]] ? d[@"caps"] : @"?";
     NSMutableArray *arr = [NSMutableArray array];
     for (NSDictionary *pd in d[@"processes"]) {
         if ([pd isKindOfClass:[NSDictionary class]]) [arr addObject:[CWProcInfo fromDictionary:pd]];
@@ -125,6 +122,12 @@
 
     // 本轮是否有任何进程成功取到能耗数据（用于面板如实标注"该数据不可用"）
     BOOL _energySupported;
+
+    // 最近一轮「能读到明细的进程数 / 总进程数」。
+    // 会随快照一起写出去：下次再出"全 0"，看一眼就知道是权限被拒（0/218）
+    // 还是代码压根没跑到这条路上。
+    NSInteger _lastDetailOK;
+    NSInteger _lastTotalPids;
 
     NSInteger _cpuCount;
     unsigned long long _memTotal;
@@ -239,16 +242,12 @@
     return out;
 }
 
-// 进程显示名：kinfo_proc 的 p_comm 只有 16 字节，容易被截断。
+// 进程显示名：kinfo_proc 的 p_comm 只有 16 字节，会被硬截断
+// （症状：SiriTTSSynthesiz / MTLCompilerServi 这种缺尾巴的名字）。
 // 能取到完整路径时优先用可执行文件名。
 - (NSString *)nameForPid:(pid_t)pid fallback:(NSString *)fallback {
-#if CW_HAVE_LIBPROC
-    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    if (proc_pidpath(pid, path, sizeof(path)) > 0) {
-        NSString *p = [NSString stringWithUTF8String:path];
-        if (p.length) return p.lastPathComponent;
-    }
-#endif
+    NSString *full = CWProcPathForPid(pid);
+    if (full.length) return full.lastPathComponent;
     return fallback.length ? fallback : [NSString stringWithFormat:@"pid %d", pid];
 }
 
@@ -261,10 +260,8 @@
 - (void)fillEnergyForProcess:(CWProcInfo *)p
                    pidNumber:(NSNumber *)pidNum
                    deltaTime:(double)dt {
-#if CW_HAVE_LIBPROC && CW_HAVE_RUSAGE_V4
-    struct rusage_info_v4 ri;
-    memset(&ri, 0, sizeof(ri));
-    if (proc_pid_rusage((pid_t)p.pid, RUSAGE_INFO_V4, (rusage_info_t *)&ri) != 0) return;
+    cw_rusage_info_v4_t ri;
+    if (CWProcRusageForPid((int)p.pid, &ri) != 0) return;
 
     p.hasEnergy = YES;
     p.energyNJ  = (unsigned long long)ri.ri_billed_energy;
@@ -282,9 +279,6 @@
     _newEnergy[pidNum]  = @(p.energyNJ);
     _newWakeups[pidNum] = @(p.wakeups);
     _energySupported = YES;
-#else
-    (void)p; (void)pidNum; (void)dt;
-#endif
 }
 
 // 全进程扫描。返回 pid -> 累计 CPU 时间(ns) 与附加信息。
@@ -323,28 +317,30 @@
         }
     }
 
-#if CW_HAVE_LIBPROC
-    // ⚠️ 这里原本写的是 `BOOL canReadDetail = (geteuid() == 0);` —— 一个致命误判。
+    // ── 每进程明细 ────────────────────────────────────────────────
     //
-    // 实机取证（iPhone 12 Pro / iOS 16.6.1 / Relaxin，uid=501 非 root）：
-    //   proc_pidinfo(PROC_PIDTASKINFO) 对 SpringBoard / backboardd / WeChat 全部成功；
-    //   proc_pid_rusage(RUSAGE_INFO_V4) 同样成功，ri_billed_energy 确有真实增量
-    //   （SpringBoard 2 秒 +71029 nJ、中断唤醒 +18 次）。
-    //   只有 launchd(pid 1) 被内核拒绝。结论：本机**根本不需要 root**。
+    // 这里踩过两个坑，都记下来免得再犯：
     //
-    // 旧写法把非 root 一律挡在门外，退回 p_pctcpu —— 而新版 XNU 把
-    // kinfo_proc.kp_proc.p_pctcpu 恒置为 0，于是面板上每个进程的 CPU 都是 0.0%，
-    // 能耗全显示"不可读"、唤醒全是 0。三个症状同一个根因。
+    // 坑一（v0.1.2 的真根因）：旧代码把这段包在 `#if __has_include(<libproc.h>)` 里。
+    //   CI 的 iPhoneOS SDK 没有 libproc.h → 判定为假 → **整段在编译期被裁掉**，
+    //   CI 日志里毫无异常。装到手机上就是每进程 CPU 全 0.0%、内存 —、线程 0、
+    //   进程名截断成 16 字符（走 p_comm 兜底）。现在统一走 CWProcShim，
+    //   不再依赖任何 SDK 头文件。
     //
-    // 现在改为：无条件尝试，用系统调用的返回值说话；真的一条都读不到才退回兜底。
+    // 坑二：更早的版本用 `geteuid() == 0` 当门槛，把非 root 环境整个挡回
+    //   p_pctcpu 兜底 —— 而新版 XNU 把该字段恒置为 0，也会得到"全 0"。
+    //   真机实测（uid=501 非 root）proc_pidinfo / proc_pid_rusage 对
+    //   SpringBoard / backboardd / WeChat 全部成功，只有 launchd(pid 1) 被拒。
+    //   所以门槛只能由**系统调用的返回值**决定，不能由 uid 决定。
+    //
+    // 结论：无条件尝试，用返回值说话；一条都读不到才退回兜底，并如实上报。
     NSUInteger detailOK = 0;
     for (NSNumber *pidNum in pids) {
         pid_t pid = (pid_t)pidNum.intValue;
         if (pid <= 0) continue;
 
-        struct proc_taskinfo pti;
-        memset(&pti, 0, sizeof(pti));
-        int got = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, (int)sizeof(pti));
+        cw_proc_taskinfo_t pti;
+        int got = CWProcInfoForPid(pid, &pti);
         if (got <= 0) continue;      // launchd 这类被内核保护的进程，跳过即可
         detailOK++;
 
@@ -373,12 +369,21 @@
 
         [out addObject:p];
     }
+    // 把「能不能读到明细」如实记录下来，随快照一起交给面板显示。
+    // 这样"全 0"这种症状下次一眼就能分辨是权限被拒还是代码没编进去。
+    _lastDetailOK  = (NSInteger)detailOK;
+    _lastTotalPids = (NSInteger)pids.count;
     if (detailOK > 0) return now;
-#endif
 
-    // 无 root 的降级路径：内核维护的衰减 CPU 估值 p_pctcpu。
-    // 单位是 FSCALE(65536) 定点数，不精确但能排序，够用来找可疑对象。
+    // ── 兜底路径：连 proc_pidinfo 都读不到时 ──────────────────────
+    //
+    // 用内核维护的衰减 CPU 估值 p_pctcpu（FSCALE 定点数）。
+    // ⚠️ 注意：新版 XNU 已把该字段恒置为 0，所以这条路上 CPU 会全是 0。
+    // 它的存在意义只是「还能列出进程」，不是「还能测 CPU」——
+    // 面板会据此明确显示"明细不可读"，而不是让用户以为机器很闲。
     {
+        _lastDetailOK = 0;
+        _lastTotalPids = (NSInteger)pids.count;
         int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
         size_t len = 0;
         if (sysctl(mib, 3, NULL, &len, NULL, 0) == 0 && len > 0) {
@@ -395,7 +400,9 @@
                         CWProcInfo *p = [CWProcInfo new];
                         p.pid = pid;
                         NSString *c = comm[@(pid)] ?: [NSString stringWithFormat:@"pid %d", pid];
-                        p.name = c;
+                        // 名字还是尽量取全：p_comm 只有 16 字节，会被截断成
+                        // SiriTTSSynthesiz / MTLCompilerServi 这种缺尾巴的形式。
+                        p.name = [self nameForPid:pid fallback:c];
                         p.cpuPercent = (double)procs[i].kp_proc.p_pctcpu / (double)FSCALE * 100.0;
                         p.memBytes = 0;
                         p.threadCount = 0;
@@ -416,6 +423,10 @@
     s.timestamp = [NSDate timeIntervalSinceReferenceDate];
     s.cpuCount = _cpuCount;
     s.tier = (NSInteger)CWDetectTier();
+    // 数据来源 + 明细可读性 + libproc 入口状态，全部随快照发出。
+    // 这样即使跨进程，也能从文件里直接看出"是谁采的、采到了什么、缺什么"。
+    s.src = self.samplerTag.length ? self.samplerTag : @"?";
+    s.caps = CWProcShimCaps();
 
     // 全局 CPU：先算差值，再更新基线
     double g = [self globalCPUPercent];
@@ -443,6 +454,8 @@
         return NSOrderedSame;
     }];
     s.processes = procs;
+    s.detailOK = _lastDetailOK;
+    s.totalPids = _lastTotalPids;
     return s;
 }
 
