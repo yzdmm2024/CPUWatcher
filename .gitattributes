@@ -1,0 +1,13 @@
+# 强制统一 LF 行尾。
+# control 里混进 \r 会让 CI 把 \r 带进版本号导致 artifact 上传失败；
+# postinst / shell 脚本混进 \r 会在设备上执行时炸。
+* text=auto eol=lf
+control text eol=lf
+Makefile text eol=lf
+*.sh text eol=lf
+postinst text eol=lf
+*.plist text eol=lf
+*.xm text eol=lf
+*.m text eol=lf
+*.h text eol=lf
+*.yml text eol=lf
