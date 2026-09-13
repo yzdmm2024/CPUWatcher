@@ -13,6 +13,7 @@
 #import <sys/sysctl.h>
 #import <sys/param.h>
 #import <sys/time.h>
+#import <sys/resource.h>
 #include <pwd.h>
 #include <unistd.h>
 #include <string.h>
@@ -29,15 +30,31 @@
 #define CW_HAVE_LIBPROC 0
 #endif
 
+// 能耗字段（ri_billed_energy / ri_interrupt_wkups）在 rusage_info_v4 里。
+// 用 SDK 的 struct 定义直接取，不手算偏移 —— 手算偏移一旦 SDK 布局变了就是静默读错。
+#if defined(RUSAGE_INFO_V4)
+#define CW_HAVE_RUSAGE_V4 1
+#else
+#define CW_HAVE_RUSAGE_V4 0
+// 这条警告是故意的：没有它，能耗功能会被静默编译掉，
+// CI 日志里看不到任何异常，装到手机上才发现"耗电那一列永远是 0"。
+#warning "RUSAGE_INFO_V4 不可用：能耗/唤醒采集将被编译掉（CPU 采集不受影响）"
+#endif
+
 #pragma mark - CWProcInfo
 
 @implementation CWProcInfo
 - (NSDictionary *)dictionaryRepresentation {
-    return @{ @"pid"    : @(self.pid),
-              @"name"   : self.name ?: @"?",
-              @"cpu"    : @(self.cpuPercent),
-              @"mem"    : @(self.memBytes),
-              @"threads": @(self.threadCount) };
+    return @{ @"pid"     : @(self.pid),
+              @"name"    : self.name ?: @"?",
+              @"cpu"     : @(self.cpuPercent),
+              @"mem"     : @(self.memBytes),
+              @"threads" : @(self.threadCount),
+              @"energyNJ": @(self.energyNJ),
+              @"wkups"   : @(self.wakeups),
+              @"nJps"    : @(self.energyNJPerSec),
+              @"wkupsPs" : @(self.wakeupsPerSec),
+              @"hasEnergy": @(self.hasEnergy) };
 }
 + (instancetype)fromDictionary:(NSDictionary *)d {
     CWProcInfo *p = [CWProcInfo new];
@@ -46,6 +63,11 @@
     p.cpuPercent = [d[@"cpu"] doubleValue];
     p.memBytes = (unsigned long long)[d[@"mem"] unsignedLongLongValue];
     p.threadCount = [d[@"threads"] integerValue];
+    p.energyNJ = (unsigned long long)[d[@"energyNJ"] unsignedLongLongValue];
+    p.wakeups = (unsigned long long)[d[@"wkups"] unsignedLongLongValue];
+    p.energyNJPerSec = [d[@"nJps"] doubleValue];
+    p.wakeupsPerSec = [d[@"wkupsPs"] doubleValue];
+    p.hasEnergy = [d[@"hasEnergy"] boolValue];
     return p;
 }
 @end
@@ -94,13 +116,25 @@
     NSMutableDictionary<NSNumber *, NSNumber *> *_prevProcTime;
     double _prevSampleTime;
 
+    // 每进程上一次的能耗累计（纳焦）与中断唤醒次数。
+    // 内核给的是从进程启动起的累计量，必须两次求差才是"当前耗电速率"。
+    NSMutableDictionary<NSNumber *, NSNumber *> *_prevEnergy;
+    NSMutableDictionary<NSNumber *, NSNumber *> *_prevWakeups;
+    NSMutableDictionary<NSNumber *, NSNumber *> *_newEnergy;
+    NSMutableDictionary<NSNumber *, NSNumber *> *_newWakeups;
+
+    // 本轮是否有任何进程成功取到能耗数据（用于面板如实标注"该数据不可用"）
+    BOOL _energySupported;
+
     NSInteger _cpuCount;
     unsigned long long _memTotal;
 }
 
 - (instancetype)init {
     if ((self = [super init])) {
-        _prevProcTime = [NSMutableDictionary dictionary];
+        _prevProcTime  = [NSMutableDictionary dictionary];
+        _prevEnergy    = [NSMutableDictionary dictionary];
+        _prevWakeups   = [NSMutableDictionary dictionary];
         _cpuCount = [NSProcessInfo processInfo].processorCount;
         if (_cpuCount <= 0) _cpuCount = 1;
         _memTotal = [self physicalMemory];
@@ -218,9 +252,48 @@
     return fallback.length ? fallback : [NSString stringWithFormat:@"pid %d", pid];
 }
 
+#pragma mark 能耗 / 唤醒
+
+// 读单个进程的能耗累计值与中断唤醒累计值，并算出相对上一轮的速率。
+//
+// 为什么必须做差：内核给的是「进程启动至今」的累计量，直接显示等于显示进程年龄。
+// 取不到时保持 hasEnergy = NO —— 界面据此如实标注"该数据不可用"，不拿 0 冒充。
+- (void)fillEnergyForProcess:(CWProcInfo *)p
+                   pidNumber:(NSNumber *)pidNum
+                   deltaTime:(double)dt {
+#if CW_HAVE_LIBPROC && CW_HAVE_RUSAGE_V4
+    struct rusage_info_v4 ri;
+    memset(&ri, 0, sizeof(ri));
+    if (proc_pid_rusage((pid_t)p.pid, RUSAGE_INFO_V4, (rusage_info_t *)&ri) != 0) return;
+
+    p.hasEnergy = YES;
+    p.energyNJ  = (unsigned long long)ri.ri_billed_energy;
+    p.wakeups   = (unsigned long long)(ri.ri_interrupt_wkups + ri.ri_pkg_idle_wkups);
+
+    NSNumber *pe = _prevEnergy[pidNum];
+    NSNumber *pw = _prevWakeups[pidNum];
+    if (pe && pw && dt > 0.001) {
+        double de = (double)p.energyNJ - (double)pe.unsignedLongLongValue;
+        double dw = (double)p.wakeups  - (double)pw.unsignedLongLongValue;
+        // 进程重启 / pid 复用会让累计量倒退，负值一律归零而不是显示成负耗电
+        p.energyNJPerSec = de > 0 ? de / dt : 0;
+        p.wakeupsPerSec  = dw > 0 ? dw / dt : 0;
+    }
+    _newEnergy[pidNum]  = @(p.energyNJ);
+    _newWakeups[pidNum] = @(p.wakeups);
+    _energySupported = YES;
+#else
+    (void)p; (void)pidNum; (void)dt;
+#endif
+}
+
 // 全进程扫描。返回 pid -> 累计 CPU 时间(ns) 与附加信息。
 - (NSMutableDictionary<NSNumber *, NSNumber *> *)readProcessTimesInto:(NSMutableArray<CWProcInfo *> *)out {
     NSMutableDictionary<NSNumber *, NSNumber *> *now = [NSMutableDictionary dictionary];
+    _newEnergy  = [NSMutableDictionary dictionary];
+    _newWakeups = [NSMutableDictionary dictionary];
+    _energySupported = NO;
+
     double nowTime = [NSDate timeIntervalSinceReferenceDate];
     double dt = nowTime - _prevSampleTime;
 
@@ -280,6 +353,10 @@
                 } else {
                     p.cpuPercent = 0;
                 }
+
+                // ---- 能耗 / 唤醒：只有 root 下 proc_pid_rusage 才会成功 ----
+                [self fillEnergyForProcess:p pidNumber:pidNum deltaTime:dt];
+
                 [out addObject:p];
             }
         }
@@ -343,7 +420,9 @@
     NSMutableArray<CWProcInfo *> *procs = [NSMutableArray array];
     NSMutableDictionary *times = [self readProcessTimesInto:procs];
 
-    _prevProcTime = times ?: [NSMutableDictionary dictionary];
+    _prevProcTime   = times ?: [NSMutableDictionary dictionary];
+    _prevEnergy     = _newEnergy  ?: [NSMutableDictionary dictionary];
+    _prevWakeups    = _newWakeups ?: [NSMutableDictionary dictionary];
     _prevSampleTime = [NSDate timeIntervalSinceReferenceDate];
 
     [procs sortUsingComparator:^NSComparisonResult(CWProcInfo *a, CWProcInfo *b) {

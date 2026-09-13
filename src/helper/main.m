@@ -110,7 +110,7 @@ int main(int argc, char *argv[]) {
             } else if (strcmp(argv[i], "--oneshot") == 0) {
                 oneshot = YES;
             } else if (strcmp(argv[i], "--version") == 0) {
-                printf("cpuwatchctl %s\n", "0.1.0");
+                printf("cpuwatchctl %s\n", CW_VERSION_STRING);
                 return 0;
             }
         }

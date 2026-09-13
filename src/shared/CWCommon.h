@@ -5,12 +5,24 @@
 
 #import <Foundation/Foundation.h>
 
+// 版本号：改版本时同步改这里 + control + bundle Info.plist（CI 会校验三者一致）。
+// 规则：小改动 +0.1（0.1.0 → 0.1.1），大改动 +1.0。
+#define CW_VERSION_STRING "0.1.1"
+
 // 数据落在用户区（不是越狱目录），方便 Filza / 爱思 / 文件 App 直接取走，
 // 也避免往 /var/jb 写导致越狱目录权限被搅乱。
 #define CW_DATA_DIR      @"/var/mobile/Media/CPUWatcher"
 #define CW_SNAPSHOT_PATH @"/var/mobile/Media/CPUWatcher/snapshot.json"
 #define CW_STATE_PATH    @"/var/mobile/Media/CPUWatcher/state.json"
+#define CW_INJECTED_PATH @"/var/mobile/Media/CPUWatcher/injected.json"
 #define CW_PREFS_DOMAIN  @"com.axs.cpuwatcher"
+
+// Darwin 通知名（面板 <-> SpringBoard 内 HUD 单向通信，不依赖任何常驻进程）
+#define CW_NOTIFY_HUD_ON        CFSTR("com.axs.cpuwatcher.hud.on")
+#define CW_NOTIFY_HUD_OFF       CFSTR("com.axs.cpuwatcher.hud.off")
+// 让 SpringBoard 里的 HUD 把「自己实际加载了哪些插件 dylib」写成 JSON。
+// 这是拿到真实注入清单的唯一零风险途径：不用 task_for_pid、不读别人内存。
+#define CW_NOTIFY_DUMP_INJECTED CFSTR("com.axs.cpuwatcher.dumpinjected")
 
 // 面板按需 spawn 的 helper 路径（按顺序尝试）
 #define CW_HELPER_PATHS @[ @"/var/jb/usr/bin/cpuwatchctl", @"/var/jb/usr/local/bin/cpuwatchctl" ]
@@ -31,6 +43,7 @@ typedef NS_ENUM(NSInteger, CWTier) {
 NSString *CWDataDirPath(void);
 NSString *CWSnapshotPath(void);
 NSString *CWStatePath(void);
+NSString *CWInjectedListPath(void);
 NSString *CWHelperLaunchPath(void);
 BOOL      CWEnsureDataDir(void);
 CWTier    CWDetectTier(void);
@@ -42,3 +55,7 @@ BOOL CWWriteJSONAtomically(NSDictionary *obj, NSString *path);
 NSDictionary *CWReadJSON(NSString *path);
 
 NSString *CWFormattedBytes(unsigned long long bytes);
+
+// 把「纳焦/秒」换算成人类能读的功率。1 nJ/s == 1e-9 W == 1e-6 mW。
+// 能耗原始数字动辄上亿，直接显示没有意义。
+NSString *CWFormatPower(double nanoJoulesPerSec);

@@ -13,7 +13,8 @@ include $(THEOS)/makefiles/common.mk
 #    硬性约束：%ctor 里不做任何 IO / 不起定时器，只有用户显式开启悬浮窗后才建窗。
 # ---------------------------------------------------------------------------
 TWEAK_NAME = CPUWatcherHUD
-CPUWatcherHUD_FILES = src/hud/CPUWatcherHUD.xm
+# CWCommon.m 只提供 JSON 原子写与公共路径，不含任何定时器/线程，注入 SpringBoard 是安全的。
+CPUWatcherHUD_FILES = src/hud/CPUWatcherHUD.xm src/shared/CWCommon.m
 CPUWatcherHUD_FRAMEWORKS = UIKit Foundation
 CPUWatcherHUD_CFLAGS = -fobjc-arc -fobjc-exceptions -Isrc -I$(THEOS_PROJECT_DIR)/src/shared
 

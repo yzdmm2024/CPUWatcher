@@ -12,10 +12,13 @@
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <unistd.h>
 
-#define CWHUD_NOTIFY_ON   CFSTR("com.axs.cpuwatcher.hud.on")
-#define CWHUD_NOTIFY_OFF  CFSTR("com.axs.cpuwatcher.hud.off")
-#define CWHUD_SNAPSHOT    @"/var/mobile/Media/CPUWatcher/snapshot.json"
+#import "CWCommon.h"
+
+#define CWHUD_SNAPSHOT    CW_SNAPSHOT_PATH
 // 快照超过这个秒数没更新，就认为数据源已停（面板已返回），显示待机。
 #define CWHUD_STALE_SEC   3.0
 
@@ -91,7 +94,7 @@
 - (void)onDoubleTap {
     // 双击 = 自己关掉自己，同时告诉面板状态已关
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                         CWHUD_NOTIFY_OFF, NULL, NULL, true);
+                                         CW_NOTIFY_HUD_OFF, NULL, NULL, true);
 }
 
 @end
@@ -212,6 +215,70 @@
 
 @end
 
+#pragma mark - 注入清单导出
+
+// 在 SpringBoard 内部遍历 _dyld_image_name，得到「真实加载了哪些插件 dylib」。
+//
+// 为什么必须在这里做：跨进程拿别人的 image list 需要 task_for_pid + 远程读内存，
+// 而本进程就是 SpringBoard —— 直接问 dyld，零风险、零权限、结果还是真值
+// （不是靠解析 Filter plist 猜出来的）。
+//
+// 顺带取每个 dylib 的 LC_UUID：崩溃日志的 usedImages 里用的就是 UUID，
+// 有了它才能把 .ips 里崩掉的地址对上具体是哪个插件。
+static void CWDumpInjectedImages(void) {
+    NSMutableArray *plugins = [NSMutableArray array];
+    uint32_t n = _dyld_image_count();
+
+    for (uint32_t i = 0; i < n; i++) {
+        const char *nm = _dyld_get_image_name(i);
+        if (!nm) continue;
+        NSString *path = [NSString stringWithUTF8String:nm];
+        if (!path.length) continue;
+
+        // 只保留越狱注入通道里的库。系统框架不列，否则几百行根本没法看。
+        BOOL isTweak = [path containsString:@"TweakInject"] ||
+                       [path containsString:@"MobileSubstrate"] ||
+                       [path containsString:@"/var/jb/"] ||
+                       [path containsString:@".jbroot"];
+        if (!isTweak) continue;
+
+        NSString *uuid = @"";
+        const struct mach_header_64 *h =
+            (const struct mach_header_64 *)_dyld_get_image_header(i);
+        if (h) {
+            const uint8_t *p = (const uint8_t *)h + sizeof(struct mach_header_64);
+            for (uint32_t c = 0; c < h->ncmds; c++) {
+                const struct load_command *lc = (const struct load_command *)p;
+                if (lc->cmdsize == 0) break;
+                if (lc->cmd == LC_UUID) {
+                    const struct uuid_command *uc = (const struct uuid_command *)lc;
+                    uuid = [NSString stringWithFormat:
+                            @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                            uc->uuid[0],  uc->uuid[1],  uc->uuid[2],  uc->uuid[3],
+                            uc->uuid[4],  uc->uuid[5],  uc->uuid[6],  uc->uuid[7],
+                            uc->uuid[8],  uc->uuid[9],  uc->uuid[10], uc->uuid[11],
+                            uc->uuid[12], uc->uuid[13], uc->uuid[14], uc->uuid[15]];
+                    break;
+                }
+                p += lc->cmdsize;
+            }
+        }
+
+        [plugins addObject:@{ @"name"    : path.lastPathComponent,
+                              @"path"    : path,
+                              @"uuid"    : uuid,
+                              @"loadAddr": [NSString stringWithFormat:@"0x%llx",
+                                            (unsigned long long)(uintptr_t)h] }];
+    }
+
+    CWEnsureDataDir();
+    CWWriteJSONAtomically(@{ @"ts"      : @([NSDate timeIntervalSinceReferenceDate]),
+                             @"pid"     : @(getpid()),
+                             @"process" : [NSProcessInfo processInfo].processName ?: @"?",
+                             @"plugins" : plugins },
+                          CWInjectedListPath());
+}
+
 #pragma mark - 通知桥
 
 static void CWHUDNotifyCallback(CFNotificationCenterRef center,
@@ -221,10 +288,15 @@ static void CWHUDNotifyCallback(CFNotificationCenterRef center,
                                 CFDictionaryRef userInfo) {
     if (!name) return;
     // 通知回调在任意线程，UI 操作一律切主队列
-    if (CFStringCompare(name, CWHUD_NOTIFY_ON, 0) == kCFCompareEqualTo) {
+    if (CFStringCompare(name, CW_NOTIFY_HUD_ON, 0) == kCFCompareEqualTo) {
         dispatch_async(dispatch_get_main_queue(), ^{ [[CWHUDController shared] show]; });
-    } else if (CFStringCompare(name, CWHUD_NOTIFY_OFF, 0) == kCFCompareEqualTo) {
+    } else if (CFStringCompare(name, CW_NOTIFY_HUD_OFF, 0) == kCFCompareEqualTo) {
         dispatch_async(dispatch_get_main_queue(), ^{ [[CWHUDController shared] hide]; });
+    } else if (CFStringCompare(name, CW_NOTIFY_DUMP_INJECTED, 0) == kCFCompareEqualTo) {
+        // 用户主动点按钮才触发；放后台队列，绝不占主线程（更不能在启动路径上）。
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            CWDumpInjectedImages();
+        });
     }
 }
 
@@ -235,13 +307,19 @@ static void CWHUDNotifyCallback(CFNotificationCenterRef center,
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL,
                                     CWHUDNotifyCallback,
-                                    CWHUD_NOTIFY_ON,
+                                    CW_NOTIFY_HUD_ON,
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL,
                                     CWHUDNotifyCallback,
-                                    CWHUD_NOTIFY_OFF,
+                                    CW_NOTIFY_HUD_OFF,
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    CWHUDNotifyCallback,
+                                    CW_NOTIFY_DUMP_INJECTED,
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 }

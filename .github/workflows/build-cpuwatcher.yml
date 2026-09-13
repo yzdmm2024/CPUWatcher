@@ -69,6 +69,11 @@ jobs:
           cp .theos/obj/debug/CPUWatcherPrefs.bundle/CPUWatcherPrefs $JB/Library/PreferenceBundles/CPUWatcherPrefs.bundle/ 2>/dev/null || \
           cp .theos/obj/CPUWatcherPrefs.bundle/CPUWatcherPrefs $JB/Library/PreferenceBundles/CPUWatcherPrefs.bundle/ || { echo "FATAL: CPUWatcherPrefs 可执行文件缺失"; exit 1; }
 
+          # ---- 同步版本号进面板 bundle。面板里「版本」那一行读的就是这个值，
+          #      不同步的话会出现「面板显示旧版本」的假象，很难排查。
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+              $JB/Library/PreferenceBundles/CPUWatcherPrefs.bundle/Info.plist
+
           # ---- PreferenceLoader 入口
           mkdir -p $JB/Library/PreferenceLoader/Preferences
           cp layout/Library/PreferenceLoader/Preferences/CPUWatcher.plist $JB/Library/PreferenceLoader/Preferences/
@@ -94,7 +99,7 @@ jobs:
       # ---------------------------------------------------------------------
       # 护栏区：任何一条不过就直接失败，不让有风险的包出去。
       # ---------------------------------------------------------------------
-      - name: "Guard 1/5: 产物里绝不能有 LaunchDaemon（白苹果防护第 1 条）"
+      - name: "Guard 1/7: 产物里绝不能有 LaunchDaemon（白苹果防护第 1 条）"
         run: |
           if find stage -path "*LaunchDaemon*" -o -path "*LaunchAgent*" | grep -q .; then
             echo "FATAL: 产物里出现了 LaunchDaemon/LaunchAgent —— 违反「开机零执行」约束"
@@ -103,7 +108,7 @@ jobs:
           fi
           echo "OK: 无任何开机自启项"
 
-      - name: "Guard 2/5: postinst 不许自动重启桌面"
+      - name: "Guard 2/7: postinst 不许自动重启桌面"
         run: |
           # 只看真实命令，忽略注释行，避免把说明文字误判成动作。
           if grep -vE '^[[:space:]]*#' stage/DEBIAN/postinst | grep -qiE 'killall|sbreload|respring'; then
@@ -113,7 +118,7 @@ jobs:
           fi
           echo "OK: postinst 不含自动重启桌面"
 
-      - name: "Guard 3/5: cpuwatchctl 必须是 setuid root(4755)"
+      - name: "Guard 3/7: cpuwatchctl 必须是 setuid root(4755)"
         run: |
           HELPER=stage/var/jb/usr/bin/cpuwatchctl
           # ⚠️ macOS 的 `stat -f "%Lp"` 只给 rwx 三位（返回 755），不含 setuid。
@@ -124,7 +129,7 @@ jobs:
           if [ "$MODE" != "4755" ]; then echo "FATAL: setuid 位没保住，跨进程采样会全部失败"; exit 1; fi
           echo "OK: setuid root 已就位"
 
-      - name: "Guard 4/5: 熵权限必须真的写进签名"
+      - name: "Guard 4/7: 熵权限必须真的写进签名"
         run: |
           ldid -e stage/var/jb/usr/bin/cpuwatchctl > /tmp/ent.plist
           cat /tmp/ent.plist
@@ -132,7 +137,7 @@ jobs:
           grep -q "task_for_pid-allow" /tmp/ent.plist  || { echo "FATAL: 缺 task_for_pid-allow"; exit 1; }
           echo "OK: entitlements 已写入二进制"
 
-      - name: "Guard 5/5: 架构必须是 fat(arm64 + arm64e)"
+      - name: "Guard 5/7: 架构必须是 fat(arm64 + arm64e)"
         run: |
           for f in stage/var/jb/usr/lib/TweakInject/CPUWatcherHUD.dylib \
                    stage/var/jb/usr/bin/cpuwatchctl \
@@ -142,6 +147,34 @@ jobs:
             if [ "$N" -lt 2 ]; then echo "FATAL: $f 不是 fat 双架构，jbroot 下会加载失败"; exit 1; fi
           done
           echo "OK: 三个二进制均为 fat"
+
+      - name: "Guard 6/7: 面板 bundle 必须带 Root.plist（少了它面板整片空白）"
+        run: |
+          # 实机踩过的坑：prefs bundle 里没有 Root.plist 时，
+          # -reloadSpecifiers 会重新走 loadSpecifiersFromPlistName: 拿到空数组，
+          # 把代码刚设好的 specifiers 整个覆盖掉。
+          # 症状 = 「设置 → CPU 监视器」点进去一片空白。
+          # frida 实测：set 之后读出 2 条 -> reload 之后读出 0 条。
+          ROOT=stage/var/jb/Library/PreferenceBundles/CPUWatcherPrefs.bundle/Root.plist
+          if [ ! -f "$ROOT" ]; then
+            echo "FATAL: 面板 bundle 少了 Root.plist —— 面板会整片空白"
+            ls -la stage/var/jb/Library/PreferenceBundles/CPUWatcherPrefs.bundle/
+            exit 1
+          fi
+          echo "OK: Root.plist 已就位"
+
+      - name: "Guard 7/7: 版本号三处必须一致（control / bundle / 源码宏）"
+        run: |
+          V_CONTROL=$(grep '^Version:' stage/DEBIAN/control | awk '{print $2}' | tr -d '\r\n ')
+          V_BUNDLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+                     stage/var/jb/Library/PreferenceBundles/CPUWatcherPrefs.bundle/Info.plist | tr -d '\r\n ')
+          V_SRC=$(grep -o 'CW_VERSION_STRING "[^"]*"' src/shared/CWCommon.h | sed 's/.*"\(.*\)"/\1/')
+          echo "control=[$V_CONTROL]  bundle=[$V_BUNDLE]  源码宏=[$V_SRC]"
+          if [ "$V_CONTROL" != "$V_BUNDLE" ] || [ "$V_CONTROL" != "$V_SRC" ]; then
+            echo "FATAL: 三处版本号不一致，面板会显示旧版本"
+            exit 1
+          fi
+          echo "OK: 版本号三处一致"
 
       - name: Pack deb
         run: |

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<!-- ============ 状态 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>状态</string>
+			<key>footerText</key>
+			<string>默认静默：不点开「实时监控」页就不会有任何采样进程，不耗电。点开才启动，返回上级页立即停止。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSTitleValueCell</string>
+			<key>label</key>
+			<string>版本</string>
+			<key>cwDynamic</key>
+			<string>version</string>
+			<key>value</key>
+			<string>—</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSTitleValueCell</string>
+			<key>label</key>
+			<string>采集权限</string>
+			<key>cwDynamic</key>
+			<string>tierName</string>
+			<key>value</key>
+			<string>检测中…</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSTitleValueCell</string>
+			<key>label</key>
+			<string>能力详情</string>
+			<key>cwDynamic</key>
+			<string>tierDetail</string>
+			<key>value</key>
+			<string>—</string>
+		</dict>
+
+		<!-- ============ 诊断 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>诊断</string>
+			<key>footerText</key>
+			<string>「实时监控」页开始采集后，返回上级页会立即杀掉采集进程。不点开就永远不采集。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>实时监控（打开后开始采集）</string>
+			<key>action</key>
+			<string>openMonitor:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>采集权限自检</string>
+			<key>action</key>
+			<string>runSelfCheck:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>列出 SpringBoard 已注入的插件</string>
+			<key>action</key>
+			<string>listInjectedPlugins:</string>
+		</dict>
+
+		<!-- ============ 悬浮窗 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>悬浮窗</string>
+			<key>footerText</key>
+			<string>开启后，只有在「实时监控」页处于前台时才显示悬浮窗；返回上级页立即消失并停止刷新。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>监控页显示悬浮窗</string>
+			<key>defaults</key>
+			<string>com.axs.cpuwatcher</string>
+			<key>key</key>
+			<string>hudWithMonitorPage</string>
+			<key>default</key>
+			<false/>
+		</dict>
+
+		<!-- ============ 安全设计 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>安全设计</string>
+			<key>footerText</key>
+			<string>① 不注册任何 LaunchDaemon，开机零执行；② 悬浮窗不 hook 任何系统方法，只监听通知；③ 采集进程有 60 秒硬性存活上限与孤儿看门狗；④ 数据写在 /var/mobile/Media/CPUWatcher，不污染越狱目录。</string>
+		</dict>
+	</array>
+</dict>
+</plist>

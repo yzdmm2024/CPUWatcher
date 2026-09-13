@@ -13,6 +13,7 @@
 NSString *CWDataDirPath(void) { return CW_DATA_DIR; }
 NSString *CWSnapshotPath(void) { return CW_SNAPSHOT_PATH; }
 NSString *CWStatePath(void)    { return CW_STATE_PATH; }
+NSString *CWInjectedListPath(void) { return CW_INJECTED_PATH; }
 
 NSString *CWFormattedBytes(unsigned long long bytes) {
     double v = (double)bytes;
@@ -22,14 +23,27 @@ NSString *CWFormattedBytes(unsigned long long bytes) {
     return [NSString stringWithFormat:@"%llu B", bytes];
 }
 
+NSString *CWFormatPower(double nanoJoulesPerSec) {
+    // 纳焦/秒 -> 瓦特：1 nJ/s = 1e-9 W
+    double w = nanoJoulesPerSec / 1e9;
+    if (w >= 1.0)     return [NSString stringWithFormat:@"%.2f W", w];
+    if (w >= 0.001)   return [NSString stringWithFormat:@"%.1f mW", w * 1000.0];
+    if (w >= 0.000001) return [NSString stringWithFormat:@"%.1f uW", w * 1e6];
+    return @"0";
+}
+
 BOOL CWEnsureDataDir(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:CW_DATA_DIR]) return YES;
 
     NSError *err = nil;
+    // 0777 是故意的：这个目录会被三个不同身份的进程写 ——
+    // helper(root) 写 snapshot.json、SpringBoard(mobile) 写 injected.json、
+    // 设置面板(mobile) 写导出快照。权限收窄会让 SpringBoard 静默写失败。
+    // 位置在 /var/mobile/Media 下，本来就是对用户可见的公开区，不涉及系统文件。
     BOOL ok = [fm createDirectoryAtPath:CW_DATA_DIR
             withIntermediateDirectories:YES
-                             attributes:@{ NSFilePosixPermissions : @(0755) }
+                             attributes:@{ NSFilePosixPermissions : @(0777) }
                                   error:&err];
     if (!ok) {
         // helper 以 root 跑时这里一般不会失败；面板以 mobile 跑时 Media 目录本身可写。
