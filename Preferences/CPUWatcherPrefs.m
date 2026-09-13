@@ -218,10 +218,11 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
     [[NSFileManager defaultManager] removeItemAtPath:CWSnapshotPath() error:NULL];
 
     int intervalMs = 1000;
+    self.helperMisses = 0;
     self.usingHelper = [self.session startWithIntervalMs:intervalMs duration:CW_HELPER_HARD_LIMIT_SEC];
 
     if (self.usingHelper) {
-        self.statusText = [NSString stringWithFormat:@"特权助手已启动（PID %d，最长 %d 秒后自动停止）",
+        self.statusText = [NSString stringWithFormat:@"采样助手已启动（PID %d，最长 %d 秒后自动停止）",
                            self.session.pid, CW_HELPER_HARD_LIMIT_SEC];
     } else {
         [self.fallbackSampler prime];
@@ -255,8 +256,8 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 
 static NSString *CWFormatTierShort(CWTier t) {
     switch (t) {
-        case CWTierFull:       return @"可读每进程 CPU / 内存 / 能耗";
-        case CWTierProcBasic:  return @"仅进程列表 + 内核估算占比（无能耗数据）";
+        case CWTierFull:       return @"每进程 CPU / 内存 / 能耗 / 唤醒全部可读";
+        case CWTierProcBasic:  return @"仅进程列表（读不到每进程 CPU 与能耗）";
         case CWTierGlobalOnly: return @"仅全局 CPU 与内存";
     }
     return @"";
@@ -267,8 +268,22 @@ static NSString *CWFormatTierShort(CWTier t) {
         NSDictionary *d = CWReadJSON(CWSnapshotPath());
         if (d) {
             self.snapshot = [CWSnapshot snapshotFromDictionary:d];
+            self.helperMisses = 0;
         } else {
-            self.statusText = @"特权助手已启动，等待首个采样…";
+            self.helperMisses++;
+            // 助手起不来、或没权限写快照文件时不能装死 —— 连读三拍没数据就切回
+            // 面板内采样。采样器已不再用 uid 做门槛，两条路径读到的都是真数据。
+            if (self.helperMisses >= 3) {
+                self.usingHelper = NO;
+                [self.session stop];
+                [self.fallbackSampler prime];
+                self.statusText = [NSString stringWithFormat:@"助手无数据，已切为面板内采样（%@）",
+                                   CWTierName(CWDetectTier())];
+                self.snapshot = [self.fallbackSampler sample];
+            } else {
+                self.statusText = [NSString stringWithFormat:@"助手已启动（PID %d），等待首个采样…",
+                                   self.session.pid];
+            }
         }
     } else {
         self.snapshot = [self.fallbackSampler sample];
@@ -452,8 +467,9 @@ static NSString *CWFormatTierShort(CWTier t) {
     CWEnsureDataDir();
 
     NSMutableString *msg = [NSMutableString string];
-    [msg appendFormat:@"采集权限档位：%@\n", CWTierName(CWDetectTier())];
-    [msg appendFormat:@"当前进程 euid：%d\n", geteuid()];
+    CWTier tier = CWDetectTier();
+    [msg appendFormat:@"采集权限档位：%@\n", CWTierName(tier)];
+    [msg appendFormat:@"（euid=%d —— 注意：本机非 root 也能读全量数据，档位不看 uid）\n", geteuid()];
 
     NSString *helper = CWHelperLaunchPath();
     [msg appendFormat:@"特权助手：%@\n", helper ? helper : @"未找到"];

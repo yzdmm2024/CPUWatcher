@@ -7,7 +7,7 @@
 
 // 版本号：改版本时同步改这里 + control + bundle Info.plist（CI 会校验三者一致）。
 // 规则：小改动 +0.1（0.1.0 → 0.1.1），大改动 +1.0。
-#define CW_VERSION_STRING "0.1.1"
+#define CW_VERSION_STRING "0.1.2"
 
 // 数据落在用户区（不是越狱目录），方便 Filza / 爱思 / 文件 App 直接取走，
 // 也避免往 /var/jb 写导致越狱目录权限被搅乱。
@@ -34,10 +34,12 @@
 // 心跳看门狗：父进程（面板）消失 / 变成 launchd 后就退出。
 #define CW_HELPER_PPID_POLL_SEC   0.5
 
+// 能力档位。注意：**判定不看 uid** —— 本机实测非 root 也能调通
+// proc_pidinfo / proc_pid_rusage，所以"完整模式"与是不是 root 无关。
 typedef NS_ENUM(NSInteger, CWTier) {
-    CWTierGlobalOnly = 0,  // 最低：只有全局 CPU（免权限）
-    CWTierProcBasic  = 1,  // 半：全进程列表 + p_pctcpu
-    CWTierFull       = 2,  // 完整：root，每进程 CPU/内存/能耗 + task port 剖析
+    CWTierGlobalOnly = 0,  // 最低：只有全局 CPU 与内存
+    CWTierProcBasic  = 1,  // 半：只有进程列表，读不到每进程 CPU / 能耗
+    CWTierFull       = 2,  // 完整：每进程 CPU / 内存 / 线程 / 能耗 / 唤醒全可读
 };
 
 // ⚠️ extern "C" 不能省：本头文件会被 .xm 文件包含，而 theos 把 .xm 当 **Objective-C++**

@@ -43,6 +43,14 @@
 			<key>value</key>
 			<string>—</string>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>采集权限说明（点这里）</string>
+			<key>action</key>
+			<string>explainTier:</string>
+		</dict>
 
 		<!-- ============ 诊断 ============ -->
 		<dict>

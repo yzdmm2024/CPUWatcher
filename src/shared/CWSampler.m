@@ -324,44 +324,56 @@
     }
 
 #if CW_HAVE_LIBPROC
-    BOOL canReadDetail = (geteuid() == 0);
-    if (canReadDetail) {
-        for (NSNumber *pidNum in pids) {
-            pid_t pid = (pid_t)pidNum.intValue;
-            if (pid <= 0) continue;
+    // ⚠️ 这里原本写的是 `BOOL canReadDetail = (geteuid() == 0);` —— 一个致命误判。
+    //
+    // 实机取证（iPhone 12 Pro / iOS 16.6.1 / Relaxin，uid=501 非 root）：
+    //   proc_pidinfo(PROC_PIDTASKINFO) 对 SpringBoard / backboardd / WeChat 全部成功；
+    //   proc_pid_rusage(RUSAGE_INFO_V4) 同样成功，ri_billed_energy 确有真实增量
+    //   （SpringBoard 2 秒 +71029 nJ、中断唤醒 +18 次）。
+    //   只有 launchd(pid 1) 被内核拒绝。结论：本机**根本不需要 root**。
+    //
+    // 旧写法把非 root 一律挡在门外，退回 p_pctcpu —— 而新版 XNU 把
+    // kinfo_proc.kp_proc.p_pctcpu 恒置为 0，于是面板上每个进程的 CPU 都是 0.0%，
+    // 能耗全显示"不可读"、唤醒全是 0。三个症状同一个根因。
+    //
+    // 现在改为：无条件尝试，用系统调用的返回值说话；真的一条都读不到才退回兜底。
+    NSUInteger detailOK = 0;
+    for (NSNumber *pidNum in pids) {
+        pid_t pid = (pid_t)pidNum.intValue;
+        if (pid <= 0) continue;
 
-            struct proc_taskinfo pti;
-            memset(&pti, 0, sizeof(pti));
-            int got = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, (int)sizeof(pti));
-            if (got <= 0) continue;
+        struct proc_taskinfo pti;
+        memset(&pti, 0, sizeof(pti));
+        int got = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &pti, (int)sizeof(pti));
+        if (got <= 0) continue;      // launchd 这类被内核保护的进程，跳过即可
+        detailOK++;
 
-            uint64_t cpuTime = pti.pti_total_user + pti.pti_total_system;
-            now[pidNum] = @(cpuTime);
+        uint64_t cpuTime = pti.pti_total_user + pti.pti_total_system;
+        now[pidNum] = @(cpuTime);
 
-            if (out) {
-                CWProcInfo *p = [CWProcInfo new];
-                p.pid = pid;
-                p.name = [self nameForPid:pid fallback:comm[pidNum]];
-                p.memBytes = pti.pti_resident_size;
-                p.threadCount = (NSInteger)pti.pti_threadnum;
+        if (!out) continue;
 
-                NSNumber *prev = _prevProcTime[pidNum];
-                if (prev && dt > 0.001) {
-                    double deltaNs = (double)(cpuTime - prev.unsignedLongLongValue);
-                    if (deltaNs < 0) deltaNs = 0;
-                    p.cpuPercent = (deltaNs / 1e9) / dt * 100.0;
-                } else {
-                    p.cpuPercent = 0;
-                }
+        CWProcInfo *p = [CWProcInfo new];
+        p.pid = pid;
+        p.name = [self nameForPid:pid fallback:comm[pidNum]];
+        p.memBytes = pti.pti_resident_size;
+        p.threadCount = (NSInteger)pti.pti_threadnum;
 
-                // ---- 能耗 / 唤醒：只有 root 下 proc_pid_rusage 才会成功 ----
-                [self fillEnergyForProcess:p pidNumber:pidNum deltaTime:dt];
-
-                [out addObject:p];
-            }
+        NSNumber *prev = _prevProcTime[pidNum];
+        if (prev && dt > 0.001) {
+            double deltaNs = (double)(cpuTime - prev.unsignedLongLongValue);
+            if (deltaNs < 0) deltaNs = 0;
+            p.cpuPercent = (deltaNs / 1e9) / dt * 100.0;
+        } else {
+            p.cpuPercent = 0;
         }
-        return now;
+
+        // ---- 能耗 / 唤醒：只看 proc_pid_rusage 有没有被拒，与 uid 无关 ----
+        [self fillEnergyForProcess:p pidNumber:pidNum deltaTime:dt];
+
+        [out addObject:p];
     }
+    if (detailOK > 0) return now;
 #endif
 
     // 无 root 的降级路径：内核维护的衰减 CPU 估值 p_pctcpu。

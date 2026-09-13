@@ -9,6 +9,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
+
+#if __has_include(<libproc.h>)
+#include <libproc.h>
+#define CW_HAVE_LIBPROC_COMMON 1
+#else
+#define CW_HAVE_LIBPROC_COMMON 0
+#endif
 
 NSString *CWDataDirPath(void) { return CW_DATA_DIR; }
 NSString *CWSnapshotPath(void) { return CW_SNAPSHOT_PATH; }
@@ -54,6 +62,13 @@ BOOL CWEnsureDataDir(void) {
 
 // ---------------------------------------------------------------------------
 // 能力档位探测：不假装全能，探到什么报什么。
+//
+// ⚠️ 关键修正：档位**不能用 geteuid()==0 判断**。
+// 实机取证（iPhone 12 Pro / iOS 16.6.1 / Relaxin）：uid=501 的非 root 进程
+// 也能调通 proc_pidinfo(PROC_PIDTASKINFO) 与 proc_pid_rusage(RUSAGE_INFO_V4)，
+// 只有 launchd(pid 1) 被拒。旧写法因此把"其实能用"的环境误报成降级，
+// 还顺带把采样路径也带偏了。
+// 这里改为**真去读一个别的进程**，能读到就是完整模式。
 // ---------------------------------------------------------------------------
 static BOOL CWCanListProcesses(void) {
     int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
@@ -68,8 +83,39 @@ static BOOL CWCanListProcesses(void) {
     return (rc == 0);
 }
 
+// 找一个「不是自己、也不是 launchd」的进程，试着读它的 taskinfo。
+// 读得到 => 每进程 CPU / 内存 / 能耗 / 唤醒全部可用。
+static BOOL CWCanReadTaskInfo(void) {
+#if CW_HAVE_LIBPROC_COMMON
+    int mib[3] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL };
+    size_t len = 0;
+    if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0) return NO;
+
+    void *buf = malloc(len);
+    if (!buf) return NO;
+    if (sysctl(mib, 3, buf, &len, NULL, 0) != 0) { free(buf); return NO; }
+
+    struct kinfo_proc *procs = (struct kinfo_proc *)buf;
+    int n = (int)(len / sizeof(struct kinfo_proc));
+    pid_t me = getpid();
+    pid_t probe = 0;
+    for (int i = 0; i < n; i++) {
+        pid_t p = procs[i].kp_proc.p_pid;
+        if (p > 0 && p != me && p != 1) { probe = p; break; }
+    }
+    free(buf);
+    if (probe <= 0) return NO;
+
+    struct proc_taskinfo pti;
+    memset(&pti, 0, sizeof(pti));
+    return proc_pidinfo(probe, PROC_PIDTASKINFO, 0, &pti, (int)sizeof(pti)) > 0;
+#else
+    return NO;
+#endif
+}
+
 CWTier CWDetectTier(void) {
-    if (geteuid() == 0) return CWTierFull;
+    if (CWCanReadTaskInfo()) return CWTierFull;
     if (CWCanListProcesses()) return CWTierProcBasic;
     return CWTierGlobalOnly;
 }
@@ -86,11 +132,13 @@ NSString *CWTierName(CWTier t) {
 NSString *CWTierDetail(CWTier t) {
     switch (t) {
         case CWTierFull:
-            return @"特权助手已就位：可读每进程 CPU / 内存 / 能耗 / 唤醒次数，并支持采样剖析。";
+            return @"每进程 CPU、内存、线程数、能耗（纳焦）、中断唤醒次数全部可读。\n\n"
+                   @"实测本机非 root 也能读到，不需要特权助手、不需要 setuid。";
         case CWTierProcBasic:
-            return @"无 root 权限：只能读到进程列表与内核估算的 CPU 占比，能耗、唤醒次数与采样剖析不可用。";
+            return @"只能读到进程列表，读不到每进程 CPU 与能耗（proc_pidinfo 被拒）。";
         case CWTierGlobalOnly:
-            return @"当前环境连进程列表都读不到：仅显示全局 CPU 与内存。冲突扫描（纯静态解析）仍可用。";
+            return @"连进程列表都受限，仅能显示全局 CPU 与内存。\n\n"
+                   @"插件冲突扫描（纯静态解析 dylib）不受影响，仍然可用。";
     }
     return @"";
 }
