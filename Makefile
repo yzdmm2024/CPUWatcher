@@ -14,7 +14,9 @@ include $(THEOS)/makefiles/common.mk
 # ---------------------------------------------------------------------------
 TWEAK_NAME = CPUWatcherHUD
 # CWCommon.m 只提供 JSON 原子写与公共路径，不含任何定时器/线程，注入 SpringBoard 是安全的。
-CPUWatcherHUD_FILES = src/hud/CPUWatcherHUD.xm src/shared/CWCommon.m
+# CWCommon.m 里 CWCanReadTaskInfo / CWDetectTier 会调 CWProcInfoForPid，
+# 所以 shim 也得编进 HUD target，否则链接期 Undefined symbols。
+CPUWatcherHUD_FILES = src/hud/CPUWatcherHUD.xm src/shared/CWCommon.m src/shared/CWProcShim.m
 CPUWatcherHUD_FRAMEWORKS = UIKit Foundation
 CPUWatcherHUD_CFLAGS = -fobjc-arc -fobjc-exceptions -Isrc -I$(THEOS_PROJECT_DIR)/src/shared
 
