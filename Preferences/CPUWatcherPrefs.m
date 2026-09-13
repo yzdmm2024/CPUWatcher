@@ -142,6 +142,7 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 @property (nonatomic, assign) CWSortMode sortMode;
 @property (nonatomic, assign) BOOL usingHelper;
 @property (nonatomic, assign) BOOL energyAvailable;
+@property (nonatomic, assign) NSInteger helperMisses;
 @property (nonatomic, copy)   NSString *statusText;
 @end
 
@@ -461,6 +462,27 @@ static NSString *CWFormatTierShort(CWTier t) {
 - (void)openMonitor:(id)sender {
     CWMonitorViewController *vc = [CWMonitorViewController new];
     [self.navigationController pushViewController:vc animated:YES];
+}
+
+/// 采集权限/能力详情这两行原本是 PSTitleValueCell，设计上就是只读展示，点不动。
+/// 但用户会去点它 —— 所以补一个真正可点的入口，把档位含义一次说清。
+- (void)explainTier:(id)sender {
+    CWTier t = CWDetectTier();
+    NSMutableString *msg = [NSMutableString string];
+
+    [msg appendFormat:@"当前档位：%@\n\n", CWTierName(t)];
+    [msg appendFormat:@"%@\n\n", CWTierDetail(t)];
+
+    [msg appendString:@"三个档位的区别：\n"];
+    [msg appendString:@"· 完整模式 —— 每进程 CPU / 内存 / 线程 / 能耗 / 唤醒全部可读\n"];
+    [msg appendString:@"· 基础模式 —— 只能列出进程，读不到每进程 CPU 与能耗\n"];
+    [msg appendString:@"· 受限模式 —— 只有全局 CPU 与内存\n\n"];
+
+    [msg appendString:@"注：本机（iOS 16.6.1 / Relaxin）实测非 root 即为完整模式 —— "
+                      @"proc_pidinfo 与 proc_pid_rusage 都调得通，不需要特权助手。\n"
+                      @"若这里显示降级，点「采集权限自检」可看到逐项实测结果。"];
+
+    [self cwShowAlert:@"采集权限说明" message:msg];
 }
 
 - (void)runSelfCheck:(id)sender {
