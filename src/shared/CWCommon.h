@@ -40,6 +40,14 @@ typedef NS_ENUM(NSInteger, CWTier) {
     CWTierFull       = 2,  // 完整：root，每进程 CPU/内存/能耗 + task port 剖析
 };
 
+// ⚠️ extern "C" 不能省：本头文件会被 .xm 文件包含，而 theos 把 .xm 当 **Objective-C++**
+// 编译。C++ 编译单元里引用这些函数会发生 name mangling（变成 _Z14CWEnsureDataDirv 之类），
+// 而 CWCommon.m 里定义的是 C 符号 _CWEnsureDataDir，链接期直接 Undefined symbols。
+// 症状：只在 .xm 引用了这些函数时才炸，纯 .m 引用完全正常，很容易误判成"函数没实现"。
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 NSString *CWDataDirPath(void);
 NSString *CWSnapshotPath(void);
 NSString *CWStatePath(void);
@@ -59,3 +67,7 @@ NSString *CWFormattedBytes(unsigned long long bytes);
 // 把「纳焦/秒」换算成人类能读的功率。1 nJ/s == 1e-9 W == 1e-6 mW。
 // 能耗原始数字动辄上亿，直接显示没有意义。
 NSString *CWFormatPower(double nanoJoulesPerSec);
+
+#ifdef __cplusplus
+}
+#endif
