@@ -7,7 +7,7 @@
 
 // 版本号：改版本时同步改这里 + control + bundle Info.plist（CI 会校验三者一致）。
 // 规则：小改动 +0.1（0.1.0 → 0.1.1），大改动 +1.0。
-#define CW_VERSION_STRING "0.1.6"
+#define CW_VERSION_STRING "0.1.7"
 
 // 数据落在用户区（不是越狱目录），方便 Filza / 爱思 / 文件 App 直接取走，
 // 也避免往 /var/jb 写导致越狱目录权限被搅乱。
@@ -18,6 +18,8 @@
 // 插件冲突扫描（IMP 归属）结果：SpringBoard 内的 HUD 写出，设置面板读取。
 #define CW_CONFLICT_PATH @"/var/mobile/Media/CPUWatcher/conflicts.json"
 #define CW_PREFS_DOMAIN  @"com.axs.cpuwatcher"
+// 面板「显示悬浮窗」开关的偏好键（监控页浮层与开关共用）。
+#define CW_HUD_ENABLED_KEY @"hudEnabled"
 
 // Darwin 通知名（面板 <-> SpringBoard 内 HUD 通信，不依赖任何常驻进程）
 // 让 SpringBoard 里的 HUD 把「自己实际加载了哪些插件 dylib」写成 JSON。
@@ -56,6 +58,7 @@ typedef NS_ENUM(NSInteger, CWProcKind) {
     CWProcKindSystem    = 0, // iOS 自带：系统守护进程 / 系统App（设置、短信、SpringBoard…）
     CWProcKindApp       = 1, // 用户安装的第三方 App（微信、抖音…）
     CWProcKindJailbreak = 2, // 越狱相关：越狱App / daemon / 工具（Sileo、Filza、/var/jb 下二进制）
+    CWProcKindUnknown   = 3, // 路径读不到，无法归类（不再冒认成系统）
 };
 
 // ⚠️ extern "C" 不能省：本头文件会被 .xm 文件包含，而 theos 把 .xm 当 **Objective-C++**

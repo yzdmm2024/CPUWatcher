@@ -214,6 +214,15 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 @property (nonatomic, assign) NSInteger helperMisses;
 @property (nonatomic, copy)   NSString *statusText;
 @property (nonatomic, assign) BOOL paused;
+
+// ---- 监控页内悬浮浮层（前 3 名，点按切 CPU/内存，长按关闭）----
+@property (nonatomic, assign) CWSortMode hudMetric;      // 浮层自己的排序依据，与页面排序独立
+@property (nonatomic, assign) BOOL hudBuilt;
+@property (nonatomic, strong) UIView *hudPanel;
+@property (nonatomic, strong) UILabel *hudTitle;
+@property (nonatomic, strong) UILabel *hudTotal;
+@property (nonatomic, strong) UILabel *hudFoot;
+@property (nonatomic, strong) NSMutableArray<NSMutableArray<UILabel *> *> *hudRows; // 每行 4 个: rank/name/tag/val
 @end
 
 // 指向当前可见的监控页，用于「开关一拨就立刻生效」。
@@ -280,6 +289,9 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
     [self.view addSubview:_statusLabel];
     [self.view addSubview:_table];
     [self.view addSubview:_legendLabel];
+
+    _hudMetric = CWSortByCPU;
+    [self buildHUDPanel];
 
     _session = [CWHelperSession new];
     _fallbackSampler = [CWSampler new];
@@ -351,6 +363,7 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
     [super viewDidAppear:animated];
     gVisibleMonitor = self;
     [self startMonitoring];
+    [self updateHUDVisibility];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -442,6 +455,7 @@ static NSString *CWFormatTierShort(CWTier t) {
     self.statusLabel.text = self.statusText;
     [self resort];
     [self.table reloadData];
+    [self updateHUDVisibility];
 }
 
 #pragma mark 排序
@@ -485,6 +499,167 @@ static NSString *CWFormatTierShort(CWTier t) {
         return r;
     }];
     self.sorted = arr;
+}
+
+#pragma mark 悬浮浮层（监控页内，前 3 名 + 点按切 CPU/内存 + 长按关闭）
+
+// 复用监控页已经采到的 self.snapshot，不额外采样；因此零额外耗电。
+// 只显示 CPU / 内存 前 3 名，每行带：名次 + 进程名 + 类别标签 + 数值，
+// 彻底解决旧版「只能看见数字、不知道是哪个」的问题。
+- (void)buildHUDPanel {
+    if (self.hudBuilt) return;
+    self.hudBuilt = YES;
+
+    UIView *panel = [[UIView alloc] init];
+    panel.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.84];
+    panel.layer.cornerRadius = 16;
+    panel.layer.borderWidth = 1;
+    panel.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.14].CGColor;
+    panel.layer.shadowColor = [UIColor blackColor].CGColor;
+    panel.layer.shadowOpacity = 0.5;
+    panel.layer.shadowRadius = 12;
+    panel.layer.shadowOffset = CGSizeMake(0, 6);
+    panel.hidden = YES;
+    [self.view addSubview:panel];
+    self.hudPanel = panel;
+
+    _hudTitle = [[UILabel alloc] init];
+    _hudTitle.text = @"CPU 监视器";
+    _hudTitle.font = [UIFont boldSystemFontOfSize:12];
+    _hudTitle.textColor = [UIColor whiteColor];
+    _hudTotal = [[UILabel alloc] init];
+    _hudTotal.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium];
+    _hudTotal.textColor = [UIColor colorWithWhite:0.82 alpha:1];
+    _hudTotal.textAlignment = NSTextAlignmentRight;
+    [panel addSubview:_hudTitle];
+    [panel addSubview:_hudTotal];
+
+    _hudRows = [NSMutableArray array];
+    for (int i = 0; i < 3; i++) {
+        NSMutableArray *cells = [NSMutableArray array];
+        UILabel *rank = [[UILabel alloc] init];
+        rank.font = [UIFont boldSystemFontOfSize:11];
+        rank.textAlignment = NSTextAlignmentCenter;
+        rank.layer.cornerRadius = 5; rank.clipsToBounds = YES;
+        UILabel *name = [[UILabel alloc] init];
+        name.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        name.textColor = [UIColor whiteColor];
+        name.lineBreakMode = NSLineBreakByTruncatingTail;
+        UILabel *tag = [[UILabel alloc] init];
+        tag.font = [UIFont boldSystemFontOfSize:9];
+        tag.textAlignment = NSTextAlignmentCenter;
+        tag.layer.cornerRadius = 4; tag.clipsToBounds = YES;
+        UILabel *val = [[UILabel alloc] init];
+        val.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightBold];
+        val.textColor = [UIColor whiteColor];
+        val.textAlignment = NSTextAlignmentRight;
+        [panel addSubview:rank]; [panel addSubview:name]; [panel addSubview:tag]; [panel addSubview:val];
+        [cells addObject:rank]; [cells addObject:name]; [cells addObject:tag]; [cells addObject:val];
+        [_hudRows addObject:cells];
+    }
+
+    _hudFoot = [[UILabel alloc] init];
+    _hudFoot.font = [UIFont systemFontOfSize:9];
+    _hudFoot.textColor = [UIColor colorWithWhite:0.55 alpha:1];
+    _hudFoot.textAlignment = NSTextAlignmentCenter;
+    [panel addSubview:_hudFoot];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onHUDTap:)];
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onHUDLongPress:)];
+    lp.minimumPressDuration = 0.6;
+    [panel addGestureRecognizer:tap];
+    [panel addGestureRecognizer:lp];
+}
+
+- (void)layoutHUDPanel {
+    CGFloat pad = 10, rowH = 26, titleH = 18, footH = 14;
+    CGFloat w = 206;
+    CGFloat h = 10 + titleH + 8 + 3 * rowH + 8 + footH + 10;
+    CGFloat x = self.view.bounds.size.width - w - 12;
+    CGFloat y = self.view.safeAreaInsets.top + 64;
+    self.hudPanel.frame = CGRectMake(x, y, w, h);
+
+    _hudTitle.frame = CGRectMake(pad, 10, w - 2 * pad - 70, titleH);
+    _hudTotal.frame = CGRectMake(w - pad - 70, 10, 70, titleH);
+    CGFloat ry = 10 + titleH + 8;
+    for (int i = 0; i < 3; i++) {
+        NSArray *c = _hudRows[i];
+        UILabel *rank = c[0], *name = c[1], *tag = c[2], *val = c[3];
+        rank.frame = CGRectMake(pad, ry + (rowH - 18) / 2, 18, 18);
+        name.frame = CGRectMake(pad + 24, ry, w - 2 * pad - 24 - 22 - 52, rowH);
+        tag.frame  = CGRectMake(w - pad - 22 - 52, ry + (rowH - 14) / 2, 22, 14);
+        val.frame  = CGRectMake(w - pad - 48, ry, 48, rowH);
+        ry += rowH;
+    }
+    _hudFoot.frame = CGRectMake(pad, ry + 2, w - 2 * pad, footH);
+}
+
+- (void)updateHUDVisibility {
+    BOOL show = [CWPrefGet2(CW_HUD_ENABLED_KEY) boolValue] && self.isViewLoaded && self.view.window;
+    self.hudPanel.hidden = !show;
+    if (show) {
+        [self layoutHUDPanel];
+        [self updateHUDPanel];
+    }
+}
+
+- (void)updateHUDPanel {
+    if (self.hudPanel.hidden) return;
+    CWSnapshot *snap = self.snapshot;
+    _hudTotal.text = snap ? [NSString stringWithFormat:@"全局 %.0f%%", snap.totalCPUPercent] : @"—";
+    NSArray<CWProcInfo *> *procs = snap.processes ?: @[];
+    NSArray *sorted = [procs sortedArrayUsingComparator:^NSComparisonResult(CWProcInfo *a, CWProcInfo *b) {
+        double av = (self.hudMetric == CWSortByMemory) ? (double)a.memBytes : a.cpuPercent;
+        double bv = (self.hudMetric == CWSortByMemory) ? (double)b.memBytes : b.cpuPercent;
+        if (av > bv) return NSOrderedAscending;
+        if (av < bv) return NSOrderedDescending;
+        return [a.name localizedCaseInsensitiveCompare:b.name];
+    }];
+    for (int i = 0; i < 3; i++) {
+        NSArray *c = _hudRows[i];
+        UILabel *rank = c[0], *name = c[1], *tag = c[2], *val = c[3];
+        if (i < (int)sorted.count) {
+            CWProcInfo *p = sorted[i];
+            rank.hidden = name.hidden = tag.hidden = val.hidden = NO;
+            rank.text = @(i + 1).stringValue;
+            UIColor *rc = (i == 0) ? [UIColor colorWithRed:1 green:0.84 blue:0.04 alpha:1]
+                        : (i == 1) ? [UIColor colorWithWhite:0.78 alpha:1]
+                                   : [UIColor colorWithRed:0.84 green:0.6 blue:0.41 alpha:1];
+            rank.backgroundColor = rc;
+            rank.textColor = [UIColor colorWithWhite:0.11 alpha:1];
+            name.text = p.name ?: @"?";
+            CWProcKind k = CWProcKindForPath(p.execPath);
+            tag.text = CWProcKindName(k);
+            UIColor *tc, *bg;
+            if (k == CWProcKindApp)            { tc = [UIColor systemGreenColor];  bg = [[UIColor systemGreenColor] colorWithAlphaComponent:0.18]; }
+            else if (k == CWProcKindJailbreak) { tc = [UIColor systemOrangeColor]; bg = [[UIColor systemOrangeColor] colorWithAlphaComponent:0.18]; }
+            else                               { tc = [UIColor systemGrayColor];   bg = [[UIColor systemGrayColor] colorWithAlphaComponent:0.2]; }
+            tag.textColor = tc; tag.backgroundColor = bg;
+            val.text = (self.hudMetric == CWSortByMemory)
+                       ? (p.memBytes ? CWFormattedBytes(p.memBytes) : @"—")
+                       : [NSString stringWithFormat:@"%.1f%%", p.cpuPercent];
+        } else {
+            rank.hidden = name.hidden = tag.hidden = val.hidden = YES;
+        }
+    }
+    _hudFoot.text = (self.hudMetric == CWSortByMemory)
+                    ? @"内存 · 点按切 CPU · 长按关闭"
+                    : @"CPU · 点按切内存 · 长按关闭";
+}
+
+- (void)onHUDTap:(id)sender {
+    self.hudMetric = (self.hudMetric == CWSortByMemory) ? CWSortByCPU : CWSortByMemory;
+    [self updateHUDPanel];
+}
+
+- (void)onHUDLongPress:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    // 长按关闭：写偏好把开关置 OFF，浮层立即隐藏；返回设置面板时开关已为关闭态。
+    CWPrefSet(CW_HUD_ENABLED_KEY, @NO);
+    self.hudPanel.hidden = YES;
+    [self updateHUDVisibility];
+    self.statusText = @"悬浮窗已关闭（可在设置里重新开启）";
+    self.statusLabel.text = self.statusText;
 }
 
 #pragma mark 表格

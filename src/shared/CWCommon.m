@@ -195,7 +195,7 @@ static NSArray<NSString *> *CWJailbreakAppNames(void) {
 // 顺序很关键：先判越狱路径 / 越狱 App 名，再判用户 App 容器，最后系统，兜底系统。
 CWProcKind CWProcKindForPath(NSString *path) {
     NSString *p = path ?: @"";
-    if (p.length == 0) return CWProcKindSystem;
+    if (p.length == 0) return CWProcKindUnknown;
 
     // 1) 越狱目录 / 注入框架 → 越狱
     if ([p containsString:@"/var/jb/"] ||
@@ -242,6 +242,7 @@ NSString *CWProcKindName(CWProcKind k) {
         case CWProcKindSystem:    return @"系统";
         case CWProcKindApp:       return @"App";
         case CWProcKindJailbreak: return @"越狱";
+        case CWProcKindUnknown:   return @"未知";
     }
     return @"系统";
 }

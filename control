@@ -1,8 +1,8 @@
 Package: com.axs.cpuwatcher
 Name: CPU 监视器
-Version: 0.1.6
+Version: 0.1.7
 Architecture: iphoneos-arm64
-Description: 本项目仅限个人学习使用，仅针对 Relaxin 越狱环境、iOS 16.6.1 进行适配，其他越狱 / 系统版本均未测试。使用产生的各类报错、异常问题，请使用者自行排查解决。功能说明：按需 CPU 与性能诊断工具（默认静默，零后台采样，打开监控页才启动采集，返回上级页立即停止）。① 全局 CPU 占用与内存占用；② 实时进程列表（支持按 CPU / 内存 / 唤醒 / 线程 / 名称排序，可暂停冻结、点击复制。每个进程按可执行路径自动标注 [系统]/[App]/[越狱] 类别，一眼区分是 iOS 自带、你装的 App 还是越狱相关程序。实测非 root 即可读取，不需要特权助手）；③ 能耗排行（按进程统计耗电纳焦与中断唤醒次数，用于定位「CPU 不高但待机耗电」的插件）；④ 一键列出 SpringBoard 实际加载的插件 dylib 清单（在 SpringBoard 内部直接问 dyld，不是解析 Filter plist 猜的，含每个 dylib 的 UUID，可与崩溃日志 usedImages 对齐）；⑤ 插件冲突扫描（IMP 归属法：遍历类方法，检测同一方法是否被多个插件替换，标红显示潜在冲突）。安全设计：不注册任何 LaunchDaemon、开机零执行、不改动系统关键进程、不写越狱目录（数据只落在 /var/mobile/Media/CPUWatcher）、采集进程有 60 秒硬性存活上限与孤儿看门狗。
+Description: 本项目仅限个人学习使用，仅针对 Relaxin 越狱环境、iOS 16.6.1 进行适配，其他越狱 / 系统版本均未测试。使用产生的各类报错、异常问题，请使用者自行排查解决。功能说明：按需 CPU 与性能诊断工具（默认静默，零后台采样，打开监控页才启动采集，返回上级页立即停止）。① 全局 CPU 占用与内存占用；② 实时进程列表（支持按 CPU / 内存 / 唤醒 / 线程 / 名称排序，可暂停冻结、点击复制。每个进程按可执行路径自动标注 [系统]/[App]/[越狱]/[未知] 类别，一眼区分是 iOS 自带、你装的 App 还是越狱相关程序；路径读不到的统一标 [未知]，不再冒认系统。实测非 root 即可读取，不需要特权助手）；③ 能耗排行（按进程统计耗电纳焦与中断唤醒次数，用于定位「CPU 不高但待机耗电」的插件）；④ 一键列出 SpringBoard 实际加载的插件 dylib 清单（在 SpringBoard 内部直接问 dyld，不是解析 Filter plist 猜的，含每个 dylib 的 UUID，可与崩溃日志 usedImages 对齐）；⑤ 插件冲突扫描（IMP 归属法：遍历类方法，检测同一方法是否被多个插件替换，标红显示潜在冲突）；⑥ 实时监控页内悬浮浮层：显示 CPU / 内存 前 3 名（带进程名，解决“只见数字不知是谁”），点按切换 CPU / 内存，长按关闭（开关同步变 OFF）。安全设计：不注册任何 LaunchDaemon、开机零执行、不改动系统关键进程、不写越狱目录（数据只落在 /var/mobile/Media/CPUWatcher）、采集进程有 60 秒硬性存活上限与孤儿看门狗。
 Depends: mobilesubstrate, firmware(>=14.0), preferenceloader
 Maintainer: yzdmm2024
 Author: yzdmm2024

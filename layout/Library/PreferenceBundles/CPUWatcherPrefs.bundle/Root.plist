@@ -94,6 +94,30 @@
 			<string>runConflictScan:</string>
 		</dict>
 
+		<!-- ============ 悬浮窗 ============ -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>悬浮窗</string>
+			<key>footerText</key>
+			<string>开启后，「实时监控」页右上角显示 CPU / 内存 前 3 名浮层（带进程名），解决「只见数字不知是谁」。点按浮层切换 CPU / 内存，长按浮层关闭（本开关同步变 OFF）。浮层只在实时监控页内显示。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>显示悬浮窗（监控页内）</string>
+			<key>defaults</key>
+			<string>com.axs.cpuwatcher</string>
+			<key>key</key>
+			<string>hudEnabled</string>
+			<key>default</key>
+			<false/>
+			<key>readDefaults</key>
+			<string>sync</string>
+		</dict>
+
 		<!-- ============ 安全设计 ============ -->
 		<dict>
 			<key>cell</key>
