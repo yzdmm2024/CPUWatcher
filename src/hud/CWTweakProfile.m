@@ -102,7 +102,11 @@ void CWRunTweakProfile(void) {
                 arm_thread_state64_t state;
                 mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
                 if (thread_get_state(t, ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
-                    uintptr_t pc = (uintptr_t)state.__pc;
+                    // 不依赖 SDK 的 __pc 字段名（不同 SDK 命名不同），按 Apple arm64
+                    // 线程状态布局直接取 PC：x[29] + fp + lr + sp + pc，单位为 uint32，
+                    // pc 落在 uint32 偏移 64..65（小端）。
+                    uint32_t *sp32 = (uint32_t *)&state;
+                    uintptr_t pc = ((uintptr_t)sp32[65] << 32) | sp32[64];
                     Dl_info dli;
                     if (dladdr((void *)pc, &dli) && dli.dli_fname) {
                         NSString *img = @(dli.dli_fname);
