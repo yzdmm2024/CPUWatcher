@@ -21,6 +21,7 @@ NSString *CWSnapshotPath(void) { return CW_SNAPSHOT_PATH; }
 NSString *CWStatePath(void)    { return CW_STATE_PATH; }
 NSString *CWInjectedListPath(void) { return CW_INJECTED_PATH; }
 NSString *CWConflictPath(void)     { return CW_CONFLICT_PATH; }
+NSString *CWTweakProfilePath(void)  { return CW_TWEAK_PROFILE_PATH; }
 
 NSString *CWFormattedBytes(unsigned long long bytes) {
     double v = (double)bytes;

@@ -33,6 +33,9 @@ static NSString *CWFormatTierShort(CWTier t);
 - (void)runConflictScan:(id)sender;
 - (void)cwScanDidFinish;
 - (void)cwPresentConflictResult;
+- (void)runTweakProfile:(id)sender;
+- (void)cwTweakProfileDidFinish;
+- (void)cwPresentTweakProfileResult;
 @end
 
 @interface CWConflictViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
@@ -50,13 +53,23 @@ static NSString *CWFormatTierShort(CWTier t);
 - (instancetype)initWithTweak:(NSDictionary *)t;
 @end
 
+@interface CWTweakProfileViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSDictionary *result;
+@property (nonatomic, strong) NSArray *tweaks;
+@property (nonatomic, strong) UITableView *table;
+- (instancetype)initWithResult:(NSDictionary *)r;
+@end
+
 @class CPUWatcherPrefsController;
 static __weak CPUWatcherPrefsController *gVisiblePrefs = nil;
 
 // HUD 扫描完成后广播 SCAN_DONE，回调里把结果页推出来（实现见文件末尾）。
 static void CWScanDoneCallback(CFNotificationCenterRef center, void *observer,
                                CFNotificationName name, const void *object, CFDictionaryRef userInfo);
+static void CWTweakProfileDoneCallback(CFNotificationCenterRef center, void *observer,
+                                       CFNotificationName name, const void *object, CFDictionaryRef userInfo);
 static void cwRegisterScanDoneOnce(void);
+static void cwRegisterTweakProfileDoneOnce(void);
 
 static NSString * const kPrefsSuite   = @"com.axs.cpuwatcher";
 static NSString * const kPrefSortMode = @"lastSortMode";
@@ -223,6 +236,7 @@ typedef NS_ENUM(NSInteger, CWSortMode) {
 @property (nonatomic, strong) UILabel *hudTotal;
 @property (nonatomic, strong) UILabel *hudFoot;
 @property (nonatomic, strong) NSMutableArray<NSMutableArray<UILabel *> *> *hudRows; // 每行 4 个: rank/name/tag/val
+@property (nonatomic, assign) BOOL hudDragging;       // 拖动浮层中：避免 tick 重排抢位置
 @end
 
 // 指向当前可见的监控页，用于「开关一拨就立刻生效」。
@@ -567,16 +581,30 @@ static NSString *CWFormatTierShort(CWTier t) {
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onHUDTap:)];
     UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onHUDLongPress:)];
     lp.minimumPressDuration = 0.6;
+    // 拖动：可在屏幕内任意移动浮层（点按切 CPU/内存、长按关闭 仍生效）。
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onHUDPan:)];
     [panel addGestureRecognizer:tap];
     [panel addGestureRecognizer:lp];
+    [panel addGestureRecognizer:pan];
+    // 长按优先于拖动，避免长按被拖动吞掉。
+    [pan requireGestureRecognizerToFail:lp];
 }
 
 - (void)layoutHUDPanel {
+    if (self.hudDragging) return;  // 拖动中不抢位置
     CGFloat pad = 10, rowH = 26, titleH = 18, footH = 14;
     CGFloat w = 206;
     CGFloat h = 10 + titleH + 8 + 3 * rowH + 8 + footH + 10;
-    CGFloat x = self.view.bounds.size.width - w - 12;
-    CGFloat y = self.view.safeAreaInsets.top + 64;
+    // 记忆落点优先；否则默认右上角。
+    CGFloat x = [CWPrefGet2(CW_HUD_ORIGIN_X_KEY) doubleValue];
+    CGFloat y = [CWPrefGet2(CW_HUD_ORIGIN_Y_KEY) doubleValue];
+    BOOL hasSaved = (x > 0 && y > 0 &&
+                     x + w <= self.view.bounds.size.width &&
+                     y + h <= self.view.bounds.size.height);
+    if (!hasSaved) {
+        x = self.view.bounds.size.width - w - 12;
+        y = self.view.safeAreaInsets.top + 64;
+    }
     self.hudPanel.frame = CGRectMake(x, y, w, h);
 
     _hudTitle.frame = CGRectMake(pad, 10, w - 2 * pad - 70, titleH);
@@ -660,6 +688,32 @@ static NSString *CWFormatTierShort(CWTier t) {
     [self updateHUDVisibility];
     self.statusText = @"悬浮窗已关闭（可在设置里重新开启）";
     self.statusLabel.text = self.statusText;
+}
+
+// 拖动浮层：可在屏幕内任意移动；松手记忆落点（存面板域，跨重开生效）。
+- (void)onHUDPan:(UIPanGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateBegan) {
+        self.hudDragging = YES;
+    } else if (g.state == UIGestureRecognizerStateChanged) {
+        CGPoint t = [g translationInView:self.view];
+        CGPoint c = _hudPanel.center;
+        c.x += t.x; c.y += t.y;
+        CGFloat hw = _hudPanel.bounds.size.width, hh = _hudPanel.bounds.size.height;
+        CGFloat minX = hw / 2, maxX = self.view.bounds.size.width - hw / 2;
+        CGFloat minY = hh / 2, maxY = self.view.bounds.size.height - hh / 2;
+        if (maxX < minX) maxX = minX;
+        if (maxY < minY) maxY = minY;
+        c.x = MAX(minX, MIN(maxX, c.x));
+        c.y = MAX(minY, MIN(maxY, c.y));
+        _hudPanel.center = c;
+        [g setTranslation:CGPointZero inView:self.view];
+    } else if (g.state == UIGestureRecognizerStateEnded ||
+               g.state == UIGestureRecognizerStateCancelled) {
+        self.hudDragging = NO;
+        CGFloat x = _hudPanel.frame.origin.x, y = _hudPanel.frame.origin.y;
+        CWPrefSet(CW_HUD_ORIGIN_X_KEY, @(x));
+        CWPrefSet(CW_HUD_ORIGIN_Y_KEY, @(y));
+    }
 }
 
 #pragma mark 表格
@@ -792,6 +846,9 @@ static NSString *CWFormatTierShort(CWTier t) {
     }
     [self cwRefreshDynamicRows];
     [self cwBindButtonActions];
+    // 注册 HUD 扫描完成通知观察者（冲突扫描 + v0.1.8 tweak 归因）。
+    cwRegisterScanDoneOnce();
+    cwRegisterTweakProfileDoneOnce();
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -1148,3 +1205,142 @@ static void cwRegisterScanDoneOnce(void) {
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
     });
 }
+
+#pragma mark - v0.1.8 插件归因完成回调 + 观察者注册
+
+static void CWTweakProfileDoneCallback(CFNotificationCenterRef center, void *observer,
+                                       CFNotificationName name, const void *object, CFDictionaryRef userInfo) {
+    if (!name) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (gVisiblePrefs) [gVisiblePrefs cwTweakProfileDidFinish];
+    });
+}
+static void cwRegisterTweakProfileDoneOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                        CWTweakProfileDoneCallback, CW_NOTIFY_TWEAK_PROFILE_DONE, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+    });
+}
+
+#pragma mark - 诊断动作（修复 v0.1.4 起缺失实现、按钮失效的问题）
+
+@implementation CPUWatcherPrefsController (Diagnostics)
+
+// 插件冲突扫描：发通知让 SpringBoard 内 HUD 扫描，面板等 SCAN_DONE 再读结果。
+- (void)runConflictScan:(id)sender {
+    CWEnsureDataDir();
+    NSString *out = CWConflictPath();
+    [[NSFileManager defaultManager] removeItemAtPath:out error:NULL];
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CW_NOTIFY_SCAN_CONFLICTS, NULL, NULL, true);
+    [self cwShowAlert:@"冲突扫描已启动"
+              message:@"正在 SpringBoard 内做 IMP 归属扫描（遍历类方法，耗时数秒）。\n"
+                      @"完成后会自动弹出结果页；若长时间无反应，请先注销(Respring)一次再试。"];
+}
+
+// SCAN_DONE 回调：读取 conflicts.json 并弹结果页。
+- (void)cwScanDidFinish {
+    NSDictionary *d = CWReadJSON(CWConflictPath());
+    if (!d) {
+        [self cwShowAlert:@"读取失败"
+                  message:@"没拿到冲突扫描结果。可能 CPUWatcherHUD.dylib 未注入 SpringBoard，"
+                          @"或装完 deb 后还没注销过。请注销(Respring)后重试。"];
+        return;
+    }
+    [self cwPresentConflictResult];
+}
+
+- (void)cwPresentConflictResult {
+    NSDictionary *d = CWReadJSON(CWConflictPath());
+    if (!d) return;
+    CWConflictViewController *vc = [[CWConflictViewController alloc] initWithResult:d];
+    [self.navigationController pushViewController:vc animated:YES];
+}
+
+// v0.1.8：越狱插件 CPU/内存归因：发通知让 SpringBoard 内 HUD 采样，等完成再读。
+- (void)runTweakProfile:(id)sender {
+    CWEnsureDataDir();
+    NSString *out = CWTweakProfilePath();
+    [[NSFileManager defaultManager] removeItemAtPath:out error:NULL];
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CW_NOTIFY_TWEAK_PROFILE, NULL, NULL, true);
+    [self cwShowAlert:@"插件归因已启动"
+              message:@"正在 SpringBoard 内采样线程 CPU 并归属到各 tweak dylib（约 3 秒）。\n"
+                      @"完成后自动弹出排行页。注：仅覆盖注入 SpringBoard 的 tweak。"];
+}
+
+- (void)cwTweakProfileDidFinish {
+    NSDictionary *d = CWReadJSON(CWTweakProfilePath());
+    if (!d) {
+        [self cwShowAlert:@"读取失败"
+                  message:@"没拿到插件归因结果。可能 CPUWatcherHUD.dylib 未注入 SpringBoard，"
+                          @"或装完 deb 后还没注销过。请注销(Respring)后重试。"];
+        return;
+    }
+    [self cwPresentTweakProfileResult];
+}
+
+- (void)cwPresentTweakProfileResult {
+    NSDictionary *d = CWReadJSON(CWTweakProfilePath());
+    if (!d) return;
+    CWTweakProfileViewController *vc = [[CWTweakProfileViewController alloc] initWithResult:d];
+    [self.navigationController pushViewController:vc animated:YES];
+}
+
+@end
+
+#pragma mark - v0.1.8 插件归因结果页
+
+@implementation CWTweakProfileViewController
+- (instancetype)initWithResult:(NSDictionary *)r {
+    if ((self = [super init])) {
+        _result = r;
+        _tweaks = [r[@"tweaks"] isKindOfClass:[NSArray class]] ? r[@"tweaks"] : @[];
+    }
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"插件 CPU/内存归因";
+    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    _table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    _table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _table.dataSource = self;
+    _table.delegate = self;
+    [self.view addSubview:_table];
+    NSNumber *dur = _result[@"durationSec"];
+    NSString *note = _result[@"note"] ?: @"";
+    self.navigationItem.prompt = [NSString stringWithFormat:@"采样 %.1fs · %@",
+                                  [dur doubleValue], note];
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    return self.tweaks.count ?: 1;
+}
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *cid = @"cwtp";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:cid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cid];
+        cell.textLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+    if (self.tweaks.count == 0) {
+        cell.textLabel.text = @"（采样窗口内无 tweak 占用 CPU，或本机只装了本插件）";
+        cell.detailTextLabel.text = @"";
+        return cell;
+    }
+    NSDictionary *t = self.tweaks[ip.row];
+    cell.textLabel.text = [NSString stringWithFormat:@"%@   %.1f%%",
+                           t[@"name"] ?: @"?", [t[@"cpuPercent"] doubleValue]];
+    unsigned long long mem = [t[@"memMappedBytes"] unsignedLongLongValue];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"CPU 窗口消耗 %@ · 映射内存 ≈ %@",
+                                 CWFormattedBytes([t[@"cpuDeltaUs"] unsignedLongLongValue]),
+                                 CWFormattedBytes(mem)];
+    return cell;
+}
+@end

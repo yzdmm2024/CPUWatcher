@@ -93,6 +93,14 @@
 			<key>action</key>
 			<string>runConflictScan:</string>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>越狱插件 CPU/内存排行（归因）</string>
+			<key>action</key>
+			<string>runTweakProfile:</string>
+		</dict>
 
 		<!-- ============ 悬浮窗 ============ -->
 		<dict>

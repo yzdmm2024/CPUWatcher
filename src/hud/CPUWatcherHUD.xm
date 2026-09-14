@@ -82,6 +82,9 @@ static void CWDumpInjectedImages(void) {
 
 #pragma mark - 通知桥
 
+// v0.1.8 tweak CPU/内存归因：在 SpringBoard 后台线程跑，不卡主线程。
+extern "C" void CWRunTweakProfile(void);
+
 static void CWHUDNotifyCallback(CFNotificationCenterRef center,
                                 void *observer,
                                 CFNotificationName name,
@@ -98,6 +101,11 @@ static void CWHUDNotifyCallback(CFNotificationCenterRef center,
         //（看门狗风险 / 白苹果）。扫描完自行广播 SCAN_DONE。
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             CWRunConflictScan();
+        });
+    } else if (CFStringCompare(name, CW_NOTIFY_TWEAK_PROFILE, 0) == kCFCompareEqualTo) {
+        // v0.1.8：tweak 资源归因，同样必须在后台线程（sleep 2.5s + suspend 线程）。
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            CWRunTweakProfile();
         });
     }
 }
@@ -116,6 +124,12 @@ static void CWHUDNotifyCallback(CFNotificationCenterRef center,
                                     NULL,
                                     CWHUDNotifyCallback,
                                     CW_NOTIFY_SCAN_CONFLICTS,
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    CWHUDNotifyCallback,
+                                    CW_NOTIFY_TWEAK_PROFILE,
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 }

@@ -7,7 +7,7 @@
 
 // 版本号：改版本时同步改这里 + control + bundle Info.plist（CI 会校验三者一致）。
 // 规则：小改动 +0.1（0.1.0 → 0.1.1），大改动 +1.0。
-#define CW_VERSION_STRING "0.1.7"
+#define CW_VERSION_STRING "0.1.8"
 
 // 数据落在用户区（不是越狱目录），方便 Filza / 爱思 / 文件 App 直接取走，
 // 也避免往 /var/jb 写导致越狱目录权限被搅乱。
@@ -17,9 +17,14 @@
 #define CW_INJECTED_PATH @"/var/mobile/Media/CPUWatcher/injected.json"
 // 插件冲突扫描（IMP 归属）结果：SpringBoard 内的 HUD 写出，设置面板读取。
 #define CW_CONFLICT_PATH @"/var/mobile/Media/CPUWatcher/conflicts.json"
+// 越狱插件 CPU / 内存归因结果（v0.1.8）：SpringBoard 内 HUD 写出，面板读取。
+#define CW_TWEAK_PROFILE_PATH @"/var/mobile/Media/CPUWatcher/tweakprofile.json"
 #define CW_PREFS_DOMAIN  @"com.axs.cpuwatcher"
 // 面板「显示悬浮窗」开关的偏好键（监控页浮层与开关共用）。
 #define CW_HUD_ENABLED_KEY @"hudEnabled"
+// 悬浮窗位置记忆（用户可拖动到屏幕任意位置，落点存进这两个键）。
+#define CW_HUD_ORIGIN_X_KEY @"hudOriginX"
+#define CW_HUD_ORIGIN_Y_KEY @"hudOriginY"
 
 // Darwin 通知名（面板 <-> SpringBoard 内 HUD 通信，不依赖任何常驻进程）
 // 让 SpringBoard 里的 HUD 把「自己实际加载了哪些插件 dylib」写成 JSON。
@@ -30,6 +35,10 @@
 // 扫描在 SpringBoard 后台线程进行，完成后广播 SCAN_DONE，面板据此读取结果文件。
 #define CW_NOTIFY_SCAN_CONFLICTS CFSTR("com.axs.cpuwatcher.scan.conflicts")
 #define CW_NOTIFY_SCAN_DONE      CFSTR("com.axs.cpuwatcher.scan.done")
+
+// 越狱插件 CPU / 内存归因（v0.1.8）：面板 -> HUD 请求；HUD 完成 -> 面板。
+#define CW_NOTIFY_TWEAK_PROFILE      CFSTR("com.axs.cpuwatcher.tweakprofile")
+#define CW_NOTIFY_TWEAK_PROFILE_DONE CFSTR("com.axs.cpuwatcher.tweakprofile.done")
 
 
 // 面板按需 spawn 的 helper 路径（按顺序尝试）
@@ -74,6 +83,7 @@ NSString *CWSnapshotPath(void);
 NSString *CWStatePath(void);
 NSString *CWInjectedListPath(void);
 NSString *CWConflictPath(void);
+NSString *CWTweakProfilePath(void);
 NSString *CWHelperLaunchPath(void);
 BOOL      CWEnsureDataDir(void);
 CWTier    CWDetectTier(void);
