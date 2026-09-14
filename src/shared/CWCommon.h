@@ -7,7 +7,7 @@
 
 // 版本号：改版本时同步改这里 + control + bundle Info.plist（CI 会校验三者一致）。
 // 规则：小改动 +0.1（0.1.0 → 0.1.1），大改动 +1.0。
-#define CW_VERSION_STRING "0.1.5"
+#define CW_VERSION_STRING "0.1.6"
 
 // 数据落在用户区（不是越狱目录），方便 Filza / 爱思 / 文件 App 直接取走，
 // 也避免往 /var/jb 写导致越狱目录权限被搅乱。
@@ -48,6 +48,16 @@ typedef NS_ENUM(NSInteger, CWTier) {
     CWTierFull       = 2,  // 完整：每进程 CPU / 内存 / 线程 / 能耗 / 唤醒全可读
 };
 
+// 进程类别：实时监控页据此把每个进程标注成「系统 / 你装的App / 越狱相关」。
+// 分类**只看可执行文件路径**，纯 Foundation，无 UIKit 依赖（本头会被 tool target 编译）。
+// 注意：越狱「插件(tweak)」本身是注入到宿主进程的 dylib，不是独立进程，所以不会
+// 单独出现在进程列表里——列表里标 [越狱] 的只是越狱App/daemon/工具（Sileo、Filza、/var/jb 下的二进制）。
+typedef NS_ENUM(NSInteger, CWProcKind) {
+    CWProcKindSystem    = 0, // iOS 自带：系统守护进程 / 系统App（设置、短信、SpringBoard…）
+    CWProcKindApp       = 1, // 用户安装的第三方 App（微信、抖音…）
+    CWProcKindJailbreak = 2, // 越狱相关：越狱App / daemon / 工具（Sileo、Filza、/var/jb 下二进制）
+};
+
 // ⚠️ extern "C" 不能省：本头文件会被 .xm 文件包含，而 theos 把 .xm 当 **Objective-C++**
 // 编译。C++ 编译单元里引用这些函数会发生 name mangling（变成 _Z14CWEnsureDataDirv 之类），
 // 而 CWCommon.m 里定义的是 C 符号 _CWEnsureDataDir，链接期直接 Undefined symbols。
@@ -66,6 +76,10 @@ BOOL      CWEnsureDataDir(void);
 CWTier    CWDetectTier(void);
 NSString *CWTierName(CWTier t);
 NSString *CWTierDetail(CWTier t);
+
+// 进程分类：CWProcKindForPath 按路径判类别，CWProcKindName 取中文标签（给 UI 用）。
+CWProcKind CWProcKindForPath(NSString *path);
+NSString  *CWProcKindName(CWProcKind k);
 
 // 原子写 JSON：先写 .tmp 再 rename，避免面板读到半个文件
 BOOL CWWriteJSONAtomically(NSDictionary *obj, NSString *path);

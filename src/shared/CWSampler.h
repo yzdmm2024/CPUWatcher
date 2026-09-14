@@ -10,6 +10,7 @@
 @interface CWProcInfo : NSObject
 @property (nonatomic, assign) NSInteger pid;
 @property (nonatomic, copy)   NSString *name;
+@property (nonatomic, copy)   NSString *execPath;     // 可执行文件完整路径（用于分类：系统/App/越狱）
 @property (nonatomic, assign) double    cpuPercent;   // 相对单核，可超过 100
 @property (nonatomic, assign) unsigned long long memBytes;
 @property (nonatomic, assign) NSInteger threadCount;

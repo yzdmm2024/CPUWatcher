@@ -174,3 +174,74 @@ NSDictionary *CWReadJSON(NSString *path) {
     id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
     return [obj isKindOfClass:[NSDictionary class]] ? obj : nil;
 }
+
+#pragma mark - 进程分类（系统 / App / 越狱）
+
+// 越狱 App / 工具的可执行名（装在 /Applications 下，不在 Apple 系统名单里）。
+// 名单有限，但覆盖最常见的几个；漏掉的越狱进程靠 /var/jb/ 路径兜底也能命中。
+static NSArray<NSString *> *CWJailbreakAppNames(void) {
+    static NSArray *names;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        names = @[ @"Sileo", @"Zebra", @"Filza", @"Filza_File_Manager", @"iCleanerPro",
+                   @"NewTerm", @"NewTerm2", @"sshd", @"Substrate",
+                   @"ElleKit", @"TrollStore", @"Cydia", @"CydiaExtender", @"Cr4shed",
+                   @"PreferenceLoader", @"rocketbootstrap", @"AppList" ];
+    });
+    return names;
+}
+
+// 按可执行文件路径判类别，纯 Foundation，无 UIKit 依赖（tool target 也编本文件）。
+// 顺序很关键：先判越狱路径 / 越狱 App 名，再判用户 App 容器，最后系统，兜底系统。
+CWProcKind CWProcKindForPath(NSString *path) {
+    NSString *p = path ?: @"";
+    if (p.length == 0) return CWProcKindSystem;
+
+    // 1) 越狱目录 / 注入框架 → 越狱
+    if ([p containsString:@"/var/jb/"] ||
+        [p containsString:@"/var/LIB/"] ||
+        [p containsString:@"TweakInject"] ||
+        [p containsString:@"MobileSubstrate"] ||
+        [p containsString:@"/usr/lib/TweakInject"] ||
+        [p containsString:@"/Library/MobileSubstrate"] ||
+        [p containsString:@"/Library/TweakInject"]) {
+        return CWProcKindJailbreak;
+    }
+
+    // 2) 越狱 App / 工具（可执行名匹配，装在 /Applications 下）
+    NSString *base = p.lastPathComponent;
+    for (NSString *name in CWJailbreakAppNames()) {
+        if ([base isEqualToString:name]) return CWProcKindJailbreak;
+    }
+
+    // 3) 用户安装的第三方 App（App Store / 侧载到沙盒容器）
+    if ([p containsString:@"/private/var/containers/Bundle/Application/"] ||
+        [p containsString:@"/var/containers/Bundle/Application/"]) {
+        return CWProcKindApp;
+    }
+
+    // 4) 系统守护进程 / 系统 App / 框架
+    if ([p hasPrefix:@"/Applications/"] ||
+        [p containsString:@"/System/Library/"] ||
+        [p containsString:@"/usr/libexec/"] ||
+        [p containsString:@"/usr/sbin/"] ||
+        [p containsString:@"/sbin/"] ||
+        [p containsString:@"/Library/Apple/"] ||
+        [p containsString:@"/usr/lib/"] ||
+        [p containsString:@"/System/Library/CoreServices/"] ||
+        [p containsString:@"/Library/Preferences/"]) {
+        return CWProcKindSystem;
+    }
+
+    // 兜底：认不出的都算系统，避免把未知进程误标成「越狱」吓人
+    return CWProcKindSystem;
+}
+
+NSString *CWProcKindName(CWProcKind k) {
+    switch (k) {
+        case CWProcKindSystem:    return @"系统";
+        case CWProcKindApp:       return @"App";
+        case CWProcKindJailbreak: return @"越狱";
+    }
+    return @"系统";
+}

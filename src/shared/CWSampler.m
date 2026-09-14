@@ -36,6 +36,7 @@
 - (NSDictionary *)dictionaryRepresentation {
     return @{ @"pid"     : @(self.pid),
               @"name"    : self.name ?: @"?",
+              @"execPath": self.execPath ?: @"",
               @"cpu"     : @(self.cpuPercent),
               @"mem"     : @(self.memBytes),
               @"threads" : @(self.threadCount),
@@ -49,6 +50,7 @@
     CWProcInfo *p = [CWProcInfo new];
     p.pid = [d[@"pid"] integerValue];
     p.name = [d[@"name"] isKindOfClass:[NSString class]] ? d[@"name"] : @"?";
+    p.execPath = [d[@"execPath"] isKindOfClass:[NSString class]] ? d[@"execPath"] : @"";
     p.cpuPercent = [d[@"cpu"] doubleValue];
     p.memBytes = (unsigned long long)[d[@"mem"] unsignedLongLongValue];
     p.threadCount = [d[@"threads"] integerValue];
@@ -351,6 +353,7 @@
 
         CWProcInfo *p = [CWProcInfo new];
         p.pid = pid;
+        p.execPath = CWProcPathForPid(pid);
         p.name = [self nameForPid:pid fallback:comm[pidNum]];
         p.memBytes = pti.pti_resident_size;
         p.threadCount = (NSInteger)pti.pti_threadnum;
@@ -399,6 +402,7 @@
 
                         CWProcInfo *p = [CWProcInfo new];
                         p.pid = pid;
+                        p.execPath = CWProcPathForPid(pid);
                         NSString *c = comm[@(pid)] ?: [NSString stringWithFormat:@"pid %d", pid];
                         // 名字还是尽量取全：p_comm 只有 16 字节，会被截断成
                         // SiriTTSSynthesiz / MTLCompilerServi 这种缺尾巴的形式。

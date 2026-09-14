@@ -242,12 +242,29 @@ static __weak CWMonitorViewController *gVisibleMonitor = nil;
 
     _legendLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _legendLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
-    _legendLabel.textColor = [UIColor tertiaryLabelColor];
     _legendLabel.numberOfLines = 0;
-    _legendLabel.text = @"提示：点右上角「排序」选排序方式，点「暂停」冻结列表；\n"
-                         @"长按或点击某行可复制；\n"
-                         @"列表里的「Preferences」是 iOS 设置 App 本身，不是插件。";
     _legendLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    // 底部常驻图例：把每行 [系统]/[App]/[越狱] 徽章的颜色含义讲清，并说明真正的
+    // 插件(tweak) 是注入宿主进程的 dylib，不会单独出现在进程列表里（去根页冲突扫描看）。
+    NSMutableAttributedString *leg = [[NSMutableAttributedString alloc] init];
+    NSDictionary *legBase = @{ NSFontAttributeName: [UIFont systemFontOfSize:11],
+                               NSForegroundColorAttributeName: [UIColor tertiaryLabelColor] };
+    void (^legTag)(NSString *, UIColor *) = ^(NSString *t, UIColor *c) {
+        [leg appendAttributedString:[[NSAttributedString alloc]
+              initWithString:t attributes:@{ NSForegroundColorAttributeName: c,
+                                            NSFontAttributeName: [UIFont boldSystemFontOfSize:11] }]];
+    };
+    legTag(@"[系统] ", [UIColor systemGrayColor]);
+    [leg appendAttributedString:[[NSAttributedString alloc] initWithString:@"iOS 自带   " attributes:legBase]];
+    legTag(@"[App] ", [UIColor systemGreenColor]);
+    [leg appendAttributedString:[[NSAttributedString alloc] initWithString:@"你装的   " attributes:legBase]];
+    legTag(@"[越狱] ", [UIColor systemOrangeColor]);
+    [leg appendAttributedString:[[NSAttributedString alloc] initWithString:@"越狱工具\n" attributes:legBase]];
+    [leg appendAttributedString:[[NSAttributedString alloc]
+          initWithString:@"真正的插件(tweak) 是注入宿主进程的 dylib，不单独出现 → 根页「插件冲突扫描」看完整清单"
+                   attributes:legBase]];
+    _legendLabel.attributedText = leg;
 
     _sortButton = [[UIBarButtonItem alloc] initWithTitle:@"排序"
                                                    style:UIBarButtonItemStylePlain
@@ -531,7 +548,20 @@ static NSString *CWFormatTierShort(CWTier t) {
             primary = [NSString stringWithFormat:@"%.1f%%   %@", p.cpuPercent, p.name];
             break;
     }
-    cell.textLabel.text = primary;
+    // 类别徽章：系统=灰 / App=绿 / 越狱=橙。tweak 本身是注入宿主的 dylib，不单独成进程。
+    CWProcKind kind = CWProcKindForPath(p.execPath);
+    UIColor *kindColor;
+    if      (kind == CWProcKindApp)       kindColor = [UIColor systemGreenColor];
+    else if (kind == CWProcKindJailbreak) kindColor = [UIColor systemOrangeColor];
+    else                                  kindColor = [UIColor systemGrayColor];
+    NSString *badge = [NSString stringWithFormat:@"[%@] ", CWProcKindName(kind)];
+    NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:badge
+        attributes:@{ NSForegroundColorAttributeName: kindColor,
+                      NSFontAttributeName: [UIFont boldSystemFontOfSize:13] }];
+    [attr appendAttributedString:[[NSAttributedString alloc] initWithString:primary
+        attributes:@{ NSForegroundColorAttributeName: [UIColor labelColor],
+                      NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightMedium] }]];
+    cell.textLabel.attributedText = attr;
 
     cell.detailTextLabel.text = [NSString stringWithFormat:
         @"PID %ld   CPU %.1f%%   唤醒 %.0f/s   内存 %@   线程 %ld",
@@ -544,9 +574,11 @@ static NSString *CWFormatTierShort(CWTier t) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.row >= (NSInteger)self.sorted.count) return;
     CWProcInfo *p = self.sorted[indexPath.row];
+    NSString *kindTag = [NSString stringWithFormat:@"[%@] %@",
+                         CWProcKindName(CWProcKindForPath(p.execPath)), p.name];
     NSString *text = [NSString stringWithFormat:
         @"%@\nPID %ld   CPU %.1f%%   唤醒 %.0f/s   内存 %@   线程 %ld",
-        p.name, (long)p.pid, p.cpuPercent, p.wakeupsPerSec,
+        kindTag, (long)p.pid, p.cpuPercent, p.wakeupsPerSec,
         p.memBytes ? CWFormattedBytes(p.memBytes) : @"—", (long)p.threadCount];
     [UIPasteboard generalPasteboard].string = text;
     // 把状态栏临时改成复制提示，0.8 秒后恢复
